@@ -8,6 +8,8 @@ import type { DashboardMetrics } from "../types/review";
 interface DashboardPageProps {
   token: string | null;
   username: string | null;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
   refreshSignal: number;
   onLogin: (username: string, password: string) => Promise<void>;
   onRegister: (username: string, password: string) => Promise<void>;
@@ -19,6 +21,8 @@ const pieColors = ["#ef4444", "#fb923c", "#facc15", "#22c55e"];
 export function DashboardPage({
   token,
   username,
+  theme,
+  onToggleTheme,
   refreshSignal,
   onLogin,
   onRegister,
@@ -75,6 +79,8 @@ export function DashboardPage({
     <div className="min-h-screen bg-app-bg text-app-text">
       <TopBar
         active="dashboard"
+        theme={theme}
+        onToggleTheme={onToggleTheme}
         token={token}
         username={username}
         onLogin={onLogin}
@@ -106,7 +112,10 @@ export function DashboardPage({
             <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <MetricCard label="Submissions" value={String(metrics.submissions)} />
               <MetricCard label="Average Score" value={String(metrics.average_score)} />
-              <MetricCard label="Latest Score" value={String(metrics.score_trend.at(-1)?.score ?? 0)} />
+              <MetricCard
+                label="Latest Score"
+                value={String(metrics.score_trend[metrics.score_trend.length - 1]?.score ?? 0)}
+              />
               <MetricCard label="Critical Issues" value={String(metrics.issue_distribution.Critical ?? 0)} />
             </section>
 

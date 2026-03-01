@@ -39,6 +39,8 @@ Response:
 - `POST /reviews/run` (Bearer token required)
 - `GET /reviews` (Bearer token required)
 - `GET /reviews/{submission_id}` (Bearer token required)
+- `GET /reviews/{submission_id}/actions` (Bearer token required)
+- `POST /reviews/{submission_id}/actions` (Bearer token required)
 
 `/reviews/run` body:
 
@@ -46,7 +48,24 @@ Response:
 {
   "filename": "demo.py",
   "language": "python",
-  "code": "query = 'SELECT * FROM users WHERE id=' + user_input"
+  "code": "query = 'SELECT * FROM users WHERE id=' + user_input",
+  "include_project_context": true,
+  "context_text": "This module handles user identity lookup.",
+  "dependency_manifest": "django==3.2.0",
+  "manifest_type": "requirements"
+}
+```
+
+`/reviews/{submission_id}/actions` body:
+
+```json
+{
+  "action_type": "accept_fix",
+  "item_key": "query:1:sql-injection:0",
+  "payload": {
+    "before": "query = \"SELECT * FROM users WHERE id = \" + user_id",
+    "after": "cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))"
+  }
 }
 ```
 

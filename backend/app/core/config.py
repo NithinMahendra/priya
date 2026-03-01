@@ -27,9 +27,15 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "mock"
     LLM_MODEL: str = "gpt-4.1-mini"
     OPENAI_API_KEY: str | None = None
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BASE_SECONDS: float = 0.75
+    PROJECT_CONTEXT_MAX_CHARS: int = 4000
 
     RATE_LIMIT_REQUESTS: int = 120
     RATE_LIMIT_WINDOW_SECONDS: int = 60
+
+    JAVA_CHECKSTYLE_CMD: str | None = None
+    JAVA_PMD_CMD: str | None = None
 
     @property
     def is_sqlite(self) -> bool:

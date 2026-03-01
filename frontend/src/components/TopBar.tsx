@@ -5,6 +5,8 @@ interface TopBarProps {
   active: "review" | "dashboard";
   onRun?: () => Promise<void>;
   isRunning?: boolean;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
   token: string | null;
   username: string | null;
   onLogin: (username: string, password: string) => Promise<void>;
@@ -16,6 +18,8 @@ export function TopBar({
   active,
   onRun,
   isRunning = false,
+  theme,
+  onToggleTheme,
   token,
   username,
   onLogin,
@@ -74,6 +78,14 @@ export function TopBar({
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            className="rounded-xl border border-app-border px-3 py-2 text-xs text-app-muted transition hover:border-app-accent hover:text-app-text"
+          >
+            {theme === "dark" ? "Light" : "Dark"} Mode
+          </button>
+
           {active === "review" && onRun && (
             <button
               type="button"

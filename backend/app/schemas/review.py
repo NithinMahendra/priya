@@ -39,6 +39,10 @@ class ReviewRequest(BaseModel):
     code: str = Field(min_length=1)
     filename: str | None = None
     language: str = "python"
+    include_project_context: bool = False
+    context_text: str | None = None
+    dependency_manifest: str | None = None
+    manifest_type: str | None = None
 
 
 class ReviewResponse(BaseModel):

@@ -10,13 +10,13 @@ const config: Config = {
       },
       colors: {
         app: {
-          bg: "#0b1014",
-          panel: "#111821",
-          panelSoft: "#16222e",
-          border: "#233243",
-          text: "#d2e5f2",
-          muted: "#7e97ab",
-          accent: "#2ac7b6"
+          bg: "rgb(var(--app-bg) / <alpha-value>)",
+          panel: "rgb(var(--app-panel) / <alpha-value>)",
+          panelSoft: "rgb(var(--app-panel-soft) / <alpha-value>)",
+          border: "rgb(var(--app-border) / <alpha-value>)",
+          text: "rgb(var(--app-text) / <alpha-value>)",
+          muted: "rgb(var(--app-muted) / <alpha-value>)",
+          accent: "rgb(var(--app-accent) / <alpha-value>)"
         }
       },
       boxShadow: {

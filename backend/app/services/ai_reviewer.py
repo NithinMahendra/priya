@@ -1,5 +1,7 @@
+import asyncio
 from typing import Any
 
+from app.core.config import settings
 from app.services.llm_provider import LLMProvider, MockProvider, get_llm_provider
 
 SEVERITY_VALUES = {"Critical", "High", "Medium", "Low"}
@@ -9,13 +11,27 @@ class AIReviewer:
     def __init__(self, provider: LLMProvider | None = None) -> None:
         self.provider = provider or get_llm_provider()
         self.fallback_provider = MockProvider()
+        self.max_retries = max(0, settings.LLM_MAX_RETRIES)
+        self.base_backoff = max(0.1, settings.LLM_RETRY_BASE_SECONDS)
 
-    async def review(self, code: str, language: str = "python") -> dict[str, Any]:
-        try:
-            raw = await self.provider.analyze_code(code=code, language=language)
-            provider_name = self.provider.__class__.__name__.replace("Provider", "").lower()
-        except Exception:
-            raw = await self.fallback_provider.analyze_code(code=code, language=language)
+    async def review(
+        self, code: str, language: str = "python", context: str | None = None
+    ) -> dict[str, Any]:
+        provider_name = self.provider.__class__.__name__.replace("Provider", "").lower()
+        raw: dict[str, Any] | None = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                raw = await self.provider.analyze_code(code=code, language=language, context=context)
+                break
+            except Exception:
+                if attempt >= self.max_retries:
+                    raw = None
+                    break
+                await asyncio.sleep(self.base_backoff * (2**attempt))
+
+        if raw is None:
+            raw = await self.fallback_provider.analyze_code(code=code, language=language, context=context)
             provider_name = "mock"
 
         normalized = self._normalize(raw)
@@ -37,6 +53,7 @@ class AIReviewer:
                     "message": str(issue.get("message", "No message provided.")),
                     "suggested_fix": str(issue.get("suggested_fix", "Review this section.")),
                     "source": str(issue.get("source", "ai")),
+                    "confidence": str(issue.get("confidence", "medium")),
                 }
             )
 

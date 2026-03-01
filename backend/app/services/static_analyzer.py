@@ -1,8 +1,15 @@
 import ast
 import re
+import shlex
+import shutil
+import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
+
+from app.core.config import settings
 
 
 @dataclass
@@ -46,15 +53,56 @@ class _LoopDepthVisitor(ast.NodeVisitor):
 
 
 class StaticAnalyzer:
-    TODO_PATTERN = re.compile(r"#\s*TODO\b", re.IGNORECASE)
+    TODO_PATTERN = re.compile(r"(#|//|/\*)\s*TODO\b", re.IGNORECASE)
     SECRET_PATTERN = re.compile(
-        r"(?i)\b(api[_-]?key|secret|token|password)\b\s*=\s*['\"][^'\"]{8,}['\"]"
+        r"(?i)\b(api[_-]?key|secret|token|password|private[_-]?key)\b\s*[:=]\s*['\"][^'\"]{8,}['\"]"
+    )
+    DEBUG_LOG_PATTERNS = {
+        "python": re.compile(r"\bprint\s*\(", re.IGNORECASE),
+        "javascript": re.compile(r"\bconsole\.log\s*\(", re.IGNORECASE),
+        "typescript": re.compile(r"\bconsole\.log\s*\(", re.IGNORECASE),
+        "java": re.compile(r"\bSystem\.out\.println\s*\(", re.IGNORECASE),
+    }
+    JS_FUNCTION_START = re.compile(
+        r"^\s*(function\s+\w+\s*\(.*\)\s*\{|(?:const|let|var)\s+\w+\s*=\s*\(?.*\)?\s*=>\s*\{)"
+    )
+    JAVA_METHOD_START = re.compile(
+        r"^\s*(public|private|protected)?\s*(static\s+)?[\w<>\[\]]+\s+\w+\s*\(.*\)\s*\{"
     )
 
     def analyze(self, code: str, language: str = "python") -> list[dict[str, Any]]:
+        normalized_language = self._normalize_language(language)
         issues: list[StaticIssue] = []
         lines = code.splitlines()
 
+        issues.extend(self._generic_line_checks(lines, normalized_language))
+        issues.extend(self._find_duplicate_blocks(lines))
+
+        if normalized_language == "python":
+            issues.extend(self._python_ast_checks(code))
+        elif normalized_language in {"javascript", "typescript"}:
+            issues.extend(self._javascript_checks(lines, normalized_language))
+        elif normalized_language == "java":
+            issues.extend(self._java_checks(lines))
+            issues.extend(self._run_external_java_lint(code))
+        else:
+            issues.extend(self._c_style_complexity_checks(lines))
+
+        return [item.to_dict() for item in issues]
+
+    def _normalize_language(self, language: str) -> str:
+        value = language.strip().lower()
+        if value in {"js", "javascript"}:
+            return "javascript"
+        if value in {"ts", "typescript"}:
+            return "typescript"
+        if value in {"py", "python"}:
+            return "python"
+        return value
+
+    def _generic_line_checks(self, lines: list[str], language: str) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        debug_pattern = self.DEBUG_LOG_PATTERNS.get(language)
         for idx, line in enumerate(lines, start=1):
             if self.TODO_PATTERN.search(line):
                 issues.append(
@@ -63,7 +111,7 @@ class StaticAnalyzer:
                         issue_type="Maintainability",
                         severity="Low",
                         message="TODO comment left in code.",
-                        suggested_fix="Resolve or convert TODO into tracked work item.",
+                        suggested_fix="Resolve TODO or convert it to a tracked issue before release.",
                     )
                 )
             if self.SECRET_PATTERN.search(line):
@@ -76,13 +124,17 @@ class StaticAnalyzer:
                         suggested_fix="Load credentials from environment variables or a secrets manager.",
                     )
                 )
-
-        issues.extend(self._find_duplicate_blocks(lines))
-
-        if language.strip().lower() == "python":
-            issues.extend(self._python_ast_checks(code))
-
-        return [item.to_dict() for item in issues]
+            if debug_pattern and debug_pattern.search(line):
+                issues.append(
+                    StaticIssue(
+                        line=idx,
+                        issue_type="Maintainability",
+                        severity="Low",
+                        message="Debug logging statement found in source.",
+                        suggested_fix="Remove or route debug logs through structured logging with levels.",
+                    )
+                )
+        return issues
 
     def _python_ast_checks(self, code: str) -> list[StaticIssue]:
         try:
@@ -104,6 +156,9 @@ class StaticAnalyzer:
                 issues.extend(self._function_size_check(node))
                 issues.extend(self._function_complexity_check(node))
                 issues.extend(self._deep_nested_loops_check(node))
+                issues.extend(self._broad_exception_check(node))
+            if isinstance(node, ast.ClassDef):
+                issues.extend(self._god_class_check(node))
         return issues
 
     def _function_size_check(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[StaticIssue]:
@@ -134,7 +189,6 @@ class StaticAnalyzer:
                 complexity += 1
             if isinstance(subnode, ast.BoolOp):
                 complexity += max(1, len(subnode.values) - 1)
-
         if complexity <= 10:
             return []
         return [
@@ -147,9 +201,7 @@ class StaticAnalyzer:
             )
         ]
 
-    def _deep_nested_loops_check(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> list[StaticIssue]:
+    def _deep_nested_loops_check(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[StaticIssue]:
         visitor = _LoopDepthVisitor()
         visitor.visit(node)
         if visitor.max_depth <= 2:
@@ -160,9 +212,211 @@ class StaticAnalyzer:
                 issue_type="Performance",
                 severity="Medium",
                 message=f"Deep nested loops detected (depth={visitor.max_depth}).",
-                suggested_fix="Reduce nesting via indexing, precomputation, or flatter control flow.",
+                suggested_fix="Reduce nesting with indexing/precomputation or flatter control flow.",
             )
         ]
+
+    def _broad_exception_check(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[StaticIssue]:
+        for subnode in ast.walk(node):
+            if isinstance(subnode, ast.ExceptHandler):
+                exception = subnode.type
+                if exception is None:
+                    return [
+                        StaticIssue(
+                            line=subnode.lineno,
+                            issue_type="Maintainability",
+                            severity="Medium",
+                            message="Bare except clause catches all exceptions.",
+                            suggested_fix="Catch specific exception types and handle each case explicitly.",
+                        )
+                    ]
+                if isinstance(exception, ast.Name) and exception.id == "Exception":
+                    return [
+                        StaticIssue(
+                            line=subnode.lineno,
+                            issue_type="Maintainability",
+                            severity="Low",
+                            message="Generic `except Exception` found.",
+                            suggested_fix="Catch precise exceptions to avoid masking real failures.",
+                        )
+                    ]
+        return []
+
+    def _god_class_check(self, node: ast.ClassDef) -> list[StaticIssue]:
+        method_count = sum(1 for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        if method_count <= 15:
+            return []
+        return [
+            StaticIssue(
+                line=node.lineno,
+                issue_type="Architecture",
+                severity="Medium",
+                message=f"Class `{node.name}` appears too large ({method_count} methods).",
+                suggested_fix="Split class responsibilities into smaller focused components.",
+            )
+        ]
+
+    def _javascript_checks(self, lines: list[str], language: str) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        issues.extend(self._c_style_complexity_checks(lines))
+        issues.extend(self._c_style_function_size_checks(lines, self.JS_FUNCTION_START, "function"))
+
+        async_without_try = re.compile(r"^\s*async\s+function|\s*=\s*async\s*\(", re.IGNORECASE)
+        has_try = any("try {" in line for line in lines)
+        if any(async_without_try.search(line) for line in lines) and not has_try:
+            issues.append(
+                StaticIssue(
+                    line=1,
+                    issue_type="Reliability",
+                    severity="Low",
+                    message="Async flow without obvious error handling.",
+                    suggested_fix="Wrap awaited calls with try/catch and handle failures explicitly.",
+                )
+            )
+
+        if language == "typescript" and any(": any" in line for line in lines):
+            issues.append(
+                StaticIssue(
+                    line=1,
+                    issue_type="Maintainability",
+                    severity="Low",
+                    message="TypeScript `any` usage detected.",
+                    suggested_fix="Replace `any` with concrete types or validated interfaces.",
+                )
+            )
+        return issues
+
+    def _java_checks(self, lines: list[str]) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        issues.extend(self._c_style_complexity_checks(lines))
+        issues.extend(self._c_style_function_size_checks(lines, self.JAVA_METHOD_START, "method"))
+
+        synchronized_methods = [idx for idx, line in enumerate(lines, start=1) if "synchronized" in line]
+        if len(synchronized_methods) > 5:
+            issues.append(
+                StaticIssue(
+                    line=synchronized_methods[0],
+                    issue_type="Performance",
+                    severity="Low",
+                    message="Heavy synchronized usage may reduce throughput.",
+                    suggested_fix="Prefer finer-grained locking or lock-free structures when possible.",
+                )
+            )
+
+        return issues
+
+    def _c_style_complexity_checks(self, lines: list[str]) -> list[StaticIssue]:
+        loop_depth = 0
+        max_depth = 0
+        loop_pattern = re.compile(r"\b(for|while)\b")
+        open_brace_pattern = re.compile(r"\{")
+        close_brace_pattern = re.compile(r"\}")
+
+        for line in lines:
+            if loop_pattern.search(line):
+                loop_depth += 1
+                max_depth = max(max_depth, loop_depth)
+            closes = len(close_brace_pattern.findall(line))
+            if closes > 0:
+                loop_depth = max(0, loop_depth - closes)
+            opens = len(open_brace_pattern.findall(line))
+            if opens and not loop_pattern.search(line):
+                max_depth = max(max_depth, loop_depth)
+
+        if max_depth <= 2:
+            return []
+        return [
+            StaticIssue(
+                line=1,
+                issue_type="Performance",
+                severity="Medium",
+                message=f"Deep nested loops detected (depth={max_depth}).",
+                suggested_fix="Reduce nested iteration depth using maps/indexes or pre-computed lookups.",
+            )
+        ]
+
+    def _c_style_function_size_checks(
+        self, lines: list[str], function_start_pattern: re.Pattern[str], label: str
+    ) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        current_start: int | None = None
+        brace_depth = 0
+
+        for idx, line in enumerate(lines, start=1):
+            if current_start is None and function_start_pattern.search(line):
+                current_start = idx
+                brace_depth = line.count("{") - line.count("}")
+                continue
+
+            if current_start is not None:
+                brace_depth += line.count("{")
+                brace_depth -= line.count("}")
+                if brace_depth <= 0:
+                    length = idx - current_start + 1
+                    if length > 50:
+                        issues.append(
+                            StaticIssue(
+                                line=current_start,
+                                issue_type="Maintainability",
+                                severity="Medium",
+                                message=f"{label.title()} at line {current_start} is {length} lines long (> 50).",
+                                suggested_fix="Break large methods into smaller cohesive units.",
+                            )
+                        )
+                    current_start = None
+        return issues
+
+    def _run_external_java_lint(self, code: str) -> list[StaticIssue]:
+        if not settings.JAVA_CHECKSTYLE_CMD and not settings.JAVA_PMD_CMD:
+            return []
+
+        with NamedTemporaryFile("w", suffix=".java", delete=False, encoding="utf-8") as tmp:
+            tmp.write(code)
+            tmp.flush()
+            temp_file = Path(tmp.name)
+        issues: list[StaticIssue] = []
+
+        try:
+            commands = [settings.JAVA_CHECKSTYLE_CMD, settings.JAVA_PMD_CMD]
+            for cmd in commands:
+                if not cmd:
+                    continue
+                parts = shlex.split(cmd)
+                if not parts:
+                    continue
+                binary = parts[0]
+                if shutil.which(binary) is None:
+                    continue
+                completed = subprocess.run(
+                    parts + [str(temp_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                if completed.returncode == 0:
+                    continue
+                output = completed.stdout + "\n" + completed.stderr
+                snippet = output.strip().splitlines()[:3]
+                if not snippet:
+                    continue
+                issues.append(
+                    StaticIssue(
+                        line=1,
+                        issue_type="Maintainability",
+                        severity="Low",
+                        message="External Java linter reported style/design concerns.",
+                        suggested_fix="Review Checkstyle/PMD output and align code with project standards.",
+                    )
+                )
+                break
+        except Exception:
+            return []
+        finally:
+            if temp_file.exists():
+                temp_file.unlink()
+
+        return issues
 
     def _find_duplicate_blocks(self, lines: list[str]) -> list[StaticIssue]:
         normalized = [line.strip() for line in lines]
@@ -183,7 +437,7 @@ class StaticAnalyzer:
                 seen[signature] = start + 1
 
         issues: list[StaticIssue] = []
-        for signature, starts in list(repeated.items())[:3]:
+        for signature, starts in list(repeated.items())[:4]:
             first_line = seen[signature]
             duplicate_line = starts[0]
             issues.append(
@@ -192,7 +446,7 @@ class StaticAnalyzer:
                     issue_type="Maintainability",
                     severity="Low",
                     message=f"Duplicate code block similar to lines around {first_line}.",
-                    suggested_fix="Extract duplicate logic into a shared function.",
+                    suggested_fix="Extract duplicate logic into a reusable function/module.",
                 )
             )
         return issues

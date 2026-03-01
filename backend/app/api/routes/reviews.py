@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
+from app.models.review_action import ReviewAction
 from app.models.submission import Submission
 from app.models.user import User
+from app.schemas.review_actions import ReviewActionCreate, ReviewActionRead
 from app.schemas.review import ReviewRequest, ReviewRunResponse, SubmissionResult
 from app.services.review_service import ReviewService
 
@@ -20,7 +22,15 @@ async def run_review(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> ReviewRunResponse:
     review_service = ReviewService()
-    result = await review_service.run(code=payload.code, language=payload.language)
+    result = await review_service.run(
+        code=payload.code,
+        language=payload.language,
+        filename=payload.filename,
+        include_project_context=payload.include_project_context,
+        context_text=payload.context_text,
+        dependency_manifest=payload.dependency_manifest,
+        manifest_type=payload.manifest_type,
+    )
 
     submission = Submission(
         user_id=current_user.id,
@@ -72,6 +82,57 @@ def list_submissions(
         .filter(Submission.user_id == current_user.id)
         .order_by(Submission.created_at.desc())
         .limit(50)
+        .all()
+    )
+    return rows
+
+
+@router.post("/{submission_id}/actions", response_model=ReviewActionRead, status_code=status.HTTP_201_CREATED)
+def create_review_action(
+    submission_id: int,
+    payload: ReviewActionCreate,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> ReviewActionRead:
+    submission = (
+        db.query(Submission)
+        .filter(Submission.id == submission_id, Submission.user_id == current_user.id)
+        .first()
+    )
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    action = ReviewAction(
+        submission_id=submission_id,
+        user_id=current_user.id,
+        action_type=payload.action_type.value,
+        item_key=payload.item_key,
+        payload=payload.payload,
+    )
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+    return action
+
+
+@router.get("/{submission_id}/actions", response_model=list[ReviewActionRead])
+def list_review_actions(
+    submission_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> list[ReviewActionRead]:
+    submission = (
+        db.query(Submission)
+        .filter(Submission.id == submission_id, Submission.user_id == current_user.id)
+        .first()
+    )
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    rows = (
+        db.query(ReviewAction)
+        .filter(ReviewAction.submission_id == submission_id, ReviewAction.user_id == current_user.id)
+        .order_by(ReviewAction.created_at.asc())
         .all()
     )
     return rows

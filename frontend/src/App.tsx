@@ -1,5 +1,5 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { login, register } from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -22,8 +22,16 @@ function parseJwtSubject(token: string): string | null {
 
 export default function App(): JSX.Element {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("theme") as "dark" | "light") ?? "dark"
+  );
   const [dashboardRefresh, setDashboardRefresh] = useState(0);
   const username = useMemo(() => (token ? parseJwtSubject(token) : null), [token]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   const handleLogin = async (inputUsername: string, password: string) => {
     const accessToken = await login(inputUsername, password);
@@ -43,6 +51,8 @@ export default function App(): JSX.Element {
     setToken(null);
   };
 
+  const toggleTheme = () => setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+
   return (
     <BrowserRouter>
       <Routes>
@@ -52,6 +62,8 @@ export default function App(): JSX.Element {
             <ReviewerPage
               token={token}
               username={username}
+              theme={theme}
+              onToggleTheme={toggleTheme}
               onLogin={handleLogin}
               onRegister={handleRegister}
               onLogout={handleLogout}
@@ -65,6 +77,8 @@ export default function App(): JSX.Element {
             <DashboardPage
               token={token}
               username={username}
+              theme={theme}
+              onToggleTheme={toggleTheme}
               refreshSignal={dashboardRefresh}
               onLogin={handleLogin}
               onRegister={handleRegister}

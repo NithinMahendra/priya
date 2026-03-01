@@ -6,7 +6,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import engine
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.models import submission, user  # noqa: F401
+from app.models import review_action, submission, user  # noqa: F401
 
 app = FastAPI(
     title=settings.APP_NAME,

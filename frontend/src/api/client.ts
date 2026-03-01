@@ -1,4 +1,10 @@
-import type { DashboardMetrics, ReviewRequest, ReviewResponse } from "../types/review";
+import type {
+  DashboardMetrics,
+  ReviewAction,
+  ReviewActionType,
+  ReviewRequest,
+  ReviewResponse
+} from "../types/review";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -63,4 +69,16 @@ export async function runReview(
 
 export async function getDashboardMetrics(token: string): Promise<DashboardMetrics> {
   return request<DashboardMetrics>("/dashboard/metrics", "GET", undefined, token);
+}
+
+export async function listReviewActions(submissionId: number, token: string): Promise<ReviewAction[]> {
+  return request<ReviewAction[]>(`/reviews/${submissionId}/actions`, "GET", undefined, token);
+}
+
+export async function createReviewAction(
+  submissionId: number,
+  payload: { action_type: ReviewActionType; item_key: string; payload: Record<string, unknown> },
+  token: string
+): Promise<ReviewAction> {
+  return request<ReviewAction>(`/reviews/${submissionId}/actions`, "POST", payload, token);
 }

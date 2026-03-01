@@ -24,3 +24,4 @@ class Submission(Base):
     )
 
     user = relationship("User", back_populates="submissions")
+    actions = relationship("ReviewAction", back_populates="submission", cascade="all, delete-orphan")

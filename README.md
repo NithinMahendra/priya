@@ -2,11 +2,14 @@
 
 Production-grade AI-powered code review platform with:
 
-- Local static analysis
-- Local security scanning
+- Multi-language static analysis (Python, JavaScript/TypeScript, Java heuristics)
+- Security scanning with SSRF, SQLi, deserialization, command execution checks
+- Dependency vulnerability checks (`requirements.txt` / `package.json`)
 - Pluggable AI semantic review (OpenAI or mock fallback)
+- Context-aware AI review (optional README/project structure context)
 - Severity scoring and quality score
 - Persisted submissions and dashboard analytics
+- Persisted review actions (accept/ignore issue/fix)
 - JWT auth and rate limiting
 
 ## Architecture
@@ -17,17 +20,22 @@ Production-grade AI-powered code review platform with:
 - `app/services`:
   - `static_analyzer.py`
   - `security_scanner.py`
+  - `dependency_scanner.py`
+  - `project_context.py`
   - `ai_reviewer.py`
   - `llm_provider.py` (`LLMProvider`, `OpenAIProvider`, `MockProvider`)
   - `review_service.py` orchestration layer
-- `app/models`: SQLAlchemy models (`User`, `Submission`)
+- `app/models`: SQLAlchemy models (`User`, `Submission`, `ReviewAction`)
 - `app/schemas`: Pydantic contracts
 - `app/middleware/rate_limit.py`: in-memory request throttling
 
 ### Frontend (React + Vite + Tailwind + Monaco)
 
 - Monaco editor and file upload
-- Review panel with severity badges, score, JSON download
+- Review panel with severity badges, score, diff view, apply/ignore fix actions
+- Inline Monaco annotations for detected lines
+- Keyboard shortcuts (`Ctrl/Cmd+Enter` run, `Esc` clear)
+- Dark/light theme toggle (dark default)
 - Dashboard with issue distribution and score trend (Recharts)
 - JWT login/register workflow
 
@@ -134,6 +142,8 @@ docker compose up --build
 - `POST /api/v1/reviews/run` (auth)
 - `GET /api/v1/reviews`
 - `GET /api/v1/reviews/{submission_id}`
+- `GET /api/v1/reviews/{submission_id}/actions`
+- `POST /api/v1/reviews/{submission_id}/actions`
 - `GET /api/v1/dashboard/metrics`
 - `POST /api/v1/integrations/github/mock-pr`
 

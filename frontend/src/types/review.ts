@@ -7,6 +7,7 @@ export interface ReviewIssue {
   message: string;
   suggested_fix: string;
   source: string;
+  confidence?: string;
 }
 
 export interface ReviewSummary {
@@ -38,6 +39,10 @@ export interface ReviewRequest {
   code: string;
   filename?: string;
   language: string;
+  include_project_context?: boolean;
+  context_text?: string;
+  dependency_manifest?: string;
+  manifest_type?: string;
 }
 
 export interface ScorePoint {
@@ -50,4 +55,15 @@ export interface DashboardMetrics {
   score_trend: ScorePoint[];
   submissions: number;
   average_score: number;
+}
+
+export type ReviewActionType = "accept_fix" | "ignore_fix" | "accept_issue" | "ignore_issue";
+
+export interface ReviewAction {
+  id: number;
+  submission_id: number;
+  action_type: ReviewActionType;
+  item_key: string;
+  payload: Record<string, unknown>;
+  created_at: string;
 }

@@ -1,10 +1,24 @@
-import type { ReviewResponse } from "../types/review";
-import { IssueList } from "./IssueList";
+import { DiffEditor } from "@monaco-editor/react";
+import { useEffect, useMemo, useState } from "react";
+
+import type { RefactorSuggestion, ReviewIssue, ReviewResponse } from "../types/review";
+import { IssueList, issueKey } from "./IssueList";
 
 interface ReviewPanelProps {
   result: ReviewResponse | null;
   loading: boolean;
   error: string | null;
+  theme: "dark" | "light";
+  onApplyFix: (suggestion: RefactorSuggestion, index: number) => void;
+  onIgnoreFix: (suggestion: RefactorSuggestion, index: number) => void;
+  onAcceptIssue: (issue: ReviewIssue, index: number) => void;
+  onIgnoreIssue: (issue: ReviewIssue, index: number) => void;
+  issueDecisions: Record<string, "accepted" | "ignored">;
+  fixDecisions: Record<string, "accepted" | "ignored">;
+}
+
+function fixKey(item: RefactorSuggestion, index: number): string {
+  return `${item.before}:${item.after}:${index}`;
 }
 
 function downloadReport(result: ReviewResponse) {
@@ -17,7 +31,29 @@ function downloadReport(result: ReviewResponse) {
   URL.revokeObjectURL(url);
 }
 
-export function ReviewPanel({ result, loading, error }: ReviewPanelProps): JSX.Element {
+export function ReviewPanel({
+  result,
+  loading,
+  error,
+  theme,
+  onApplyFix,
+  onIgnoreFix,
+  onAcceptIssue,
+  onIgnoreIssue,
+  issueDecisions,
+  fixDecisions
+}: ReviewPanelProps): JSX.Element {
+  const [selectedFixIndex, setSelectedFixIndex] = useState(0);
+
+  useEffect(() => {
+    setSelectedFixIndex(0);
+  }, [result?.submission_id]);
+
+  const selectedFix = useMemo(
+    () => (result?.refactor_suggestions ?? [])[selectedFixIndex] ?? null,
+    [result, selectedFixIndex]
+  );
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center rounded-2xl border border-app-border bg-app-panel p-6 shadow-panel">
@@ -51,7 +87,7 @@ export function ReviewPanel({ result, loading, error }: ReviewPanelProps): JSX.E
     <section className="space-y-4 rounded-2xl border border-app-border bg-app-panel p-5 shadow-panel">
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-2xl border border-app-border bg-app-panelSoft p-4">
-          <p className="text-xs uppercase tracking-wider text-app-muted">Quality Score</p>
+          <p className="text-xs uppercase tracking-wider text-app-muted">Health Score</p>
           <p className="mt-2 text-3xl font-semibold text-app-text">{result.summary.score}</p>
         </div>
         <div className="rounded-2xl border border-app-border bg-app-panelSoft p-4">
@@ -73,24 +109,84 @@ export function ReviewPanel({ result, loading, error }: ReviewPanelProps): JSX.E
         <p className="mt-2 text-sm text-app-text">{result.overall_assessment}</p>
       </article>
 
-      <IssueList issues={result.issues} />
+      <IssueList
+        issues={result.issues}
+        decisions={issueDecisions}
+        onAcceptIssue={onAcceptIssue}
+        onIgnoreIssue={onIgnoreIssue}
+      />
 
       {result.refactor_suggestions.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-semibold text-app-text">Refactor Suggestions (Before → After)</h3>
-          {result.refactor_suggestions.slice(0, 4).map((item, idx) => (
-            <article key={`${item.before}-${idx}`} className="rounded-2xl border border-app-border bg-app-panelSoft p-4">
-              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                <pre className="overflow-x-auto rounded-xl bg-black/30 p-3 font-mono text-xs text-red-200">
-                  {item.before}
-                </pre>
-                <pre className="overflow-x-auto rounded-xl bg-black/30 p-3 font-mono text-xs text-emerald-200">
-                  {item.after}
-                </pre>
+        <section className="space-y-3">
+          <h3 className="text-sm font-semibold text-app-text">Fix-it Suggestions</h3>
+
+          <div className="grid grid-cols-1 gap-3">
+            {result.refactor_suggestions.slice(0, 8).map((item, idx) => {
+              const key = fixKey(item, idx);
+              const decision = fixDecisions[key];
+              return (
+                <article
+                  key={key}
+                  className="rounded-2xl border border-app-border bg-app-panelSoft p-4"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFixIndex(idx)}
+                      className="text-left text-sm text-app-text transition hover:text-white"
+                    >
+                      Suggestion {idx + 1}
+                    </button>
+                    {decision ? (
+                      <span className="rounded-lg border border-app-border px-2 py-1 text-xs text-app-muted">
+                        {decision}
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onApplyFix(item, idx)}
+                          className="rounded-lg border border-app-border px-2 py-1 text-xs text-emerald-300 transition hover:border-emerald-400/50"
+                        >
+                          Apply Fix
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onIgnoreFix(item, idx)}
+                          className="rounded-lg border border-app-border px-2 py-1 text-xs text-amber-300 transition hover:border-amber-400/50"
+                        >
+                          Ignore
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <p className="mt-2 text-xs text-app-muted">{item.reason}</p>
+                </article>
+              );
+            })}
+          </div>
+
+          {selectedFix && (
+            <div className="overflow-hidden rounded-2xl border border-app-border">
+              <div className="border-b border-app-border bg-app-panelSoft px-3 py-2 text-xs text-app-muted">
+                {"Side-by-side diff (original -> suggested)"}
               </div>
-              <p className="mt-2 text-xs text-app-muted">{item.reason}</p>
-            </article>
-          ))}
+              <DiffEditor
+                height="220px"
+                language="plaintext"
+                original={selectedFix.before}
+                modified={selectedFix.after}
+                theme={theme === "dark" ? "vs-dark" : "light"}
+                options={{
+                  readOnly: true,
+                  renderSideBySide: true,
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  scrollBeyondLastLine: false
+                }}
+              />
+            </div>
+          )}
         </section>
       )}
 
@@ -119,3 +215,5 @@ function Stat({ label, value, tone }: StatProps): JSX.Element {
     </div>
   );
 }
+
+export { fixKey, issueKey };

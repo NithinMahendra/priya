@@ -7,7 +7,9 @@ from app.core.config import settings
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def analyze_code(self, code: str, language: str = "python") -> dict[str, Any]:
+    async def analyze_code(
+        self, code: str, language: str = "python", context: str | None = None
+    ) -> dict[str, Any]:
         """Run semantic analysis and return structured review JSON."""
 
 
@@ -15,7 +17,9 @@ class MockProvider(LLMProvider):
     def __init__(self, model: str = "mock-model") -> None:
         self.model = model
 
-    async def analyze_code(self, code: str, language: str = "python") -> dict[str, Any]:
+    async def analyze_code(
+        self, code: str, language: str = "python", context: str | None = None
+    ) -> dict[str, Any]:
         issues: list[dict[str, Any]] = []
         refactor_suggestions: list[dict[str, str]] = []
         lines = code.splitlines()
@@ -70,6 +74,18 @@ class MockProvider(LLMProvider):
                 }
             )
 
+        if context and ("README" in context or "Project Structure" in context):
+            issues.append(
+                {
+                    "line": 1,
+                    "type": "Architecture",
+                    "severity": "Low",
+                    "message": "Repository context considered during semantic review.",
+                    "suggested_fix": "Validate this change aligns with documented module boundaries.",
+                    "source": "ai",
+                }
+            )
+
         if not issues:
             issues.append(
                 {
@@ -97,7 +113,9 @@ class OpenAIProvider(LLMProvider):
         self.api_key = api_key
         self.model = model
 
-    async def analyze_code(self, code: str, language: str = "python") -> dict[str, Any]:
+    async def analyze_code(
+        self, code: str, language: str = "python", context: str | None = None
+    ) -> dict[str, Any]:
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:
@@ -110,10 +128,13 @@ class OpenAIProvider(LLMProvider):
             "Each issue must include line, type, severity (Critical/High/Medium/Low), "
             "message, suggested_fix."
         )
+        context_block = (context or "No repository context provided.").strip()[:3500]
         user_prompt = (
             f"Language: {language}\n"
             "Analyze this source code for correctness, maintainability, performance, and security.\n"
+            "Use repository context to infer architectural intent when relevant.\n"
             "Provide concise, actionable findings.\n\n"
+            f"Repository Context:\n{context_block}\n\n"
             f"Code:\n```{language}\n{code}\n```"
         )
 
