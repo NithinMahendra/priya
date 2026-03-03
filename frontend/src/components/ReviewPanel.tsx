@@ -1,7 +1,7 @@
-import { DiffEditor } from "@monaco-editor/react";
+﻿import { DiffEditor } from "@monaco-editor/react";
 import { useEffect, useMemo, useState } from "react";
 
-import type { RefactorSuggestion, ReviewIssue, ReviewResponse } from "../types/review";
+import type { PerformanceProfile, RefactorSuggestion, ReviewIssue, ReviewResponse } from "../types/review";
 import { IssueList, issueKey } from "./IssueList";
 
 interface ReviewPanelProps {
@@ -31,6 +31,13 @@ function downloadReport(result: ReviewResponse) {
   URL.revokeObjectURL(url);
 }
 
+const EMPTY_PERFORMANCE: PerformanceProfile = {
+  time_complexity: "Unknown",
+  space_complexity: "Unknown",
+  confidence: "medium",
+  hotspots: []
+};
+
 export function ReviewPanel({
   result,
   loading,
@@ -44,15 +51,21 @@ export function ReviewPanel({
   fixDecisions
 }: ReviewPanelProps): JSX.Element {
   const [selectedFixIndex, setSelectedFixIndex] = useState(0);
+  const [activeTab, setActiveTab] = useState<"issues" | "performance">("issues");
+  const [selectedIssueFix, setSelectedIssueFix] = useState<ReviewIssue | null>(null);
 
   useEffect(() => {
     setSelectedFixIndex(0);
+    setActiveTab("issues");
+    setSelectedIssueFix(null);
   }, [result?.submission_id]);
 
   const selectedFix = useMemo(
     () => (result?.refactor_suggestions ?? [])[selectedFixIndex] ?? null,
     [result, selectedFixIndex]
   );
+
+  const performance = result?.performance ?? EMPTY_PERFORMANCE;
 
   if (loading) {
     return (
@@ -112,75 +125,58 @@ export function ReviewPanel({
             Mock provider is active. Configure OpenRouter to get full semantic analysis quality.
           </p>
         )}
+        {result.provider.startsWith("openrouter-quota-degraded") && (
+          <p className="mt-2 text-xs text-amber-300">
+            OpenRouter free-tier quota reached. Showing local-only analysis for now.
+          </p>
+        )}
       </article>
 
-      <IssueList
-        issues={result.issues}
-        decisions={issueDecisions}
-        onAcceptIssue={onAcceptIssue}
-        onIgnoreIssue={onIgnoreIssue}
-      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab("issues")}
+          className={`rounded-xl border px-3 py-2 text-xs transition ${
+            activeTab === "issues"
+              ? "border-app-accent bg-app-accent/20 text-app-accent"
+              : "border-app-border text-app-muted hover:border-app-accent/40"
+          }`}
+        >
+          Issues
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("performance")}
+          className={`rounded-xl border px-3 py-2 text-xs transition ${
+            activeTab === "performance"
+              ? "border-app-accent bg-app-accent/20 text-app-accent"
+              : "border-app-border text-app-muted hover:border-app-accent/40"
+          }`}
+        >
+          Performance
+        </button>
+      </div>
 
-      {result.refactor_suggestions.length > 0 && (
-        <section className="space-y-3">
-          <h3 className="text-sm font-semibold text-app-text">Fix-it Suggestions</h3>
+      {activeTab === "issues" ? (
+        <>
+          <IssueList
+            issues={result.issues}
+            decisions={issueDecisions}
+            onAcceptIssue={onAcceptIssue}
+            onIgnoreIssue={onIgnoreIssue}
+            onViewFix={(issue) => setSelectedIssueFix(issue)}
+          />
 
-          <div className="grid grid-cols-1 gap-3">
-            {result.refactor_suggestions.slice(0, 8).map((item, idx) => {
-              const key = fixKey(item, idx);
-              const decision = fixDecisions[key];
-              return (
-                <article
-                  key={key}
-                  className="rounded-2xl border border-app-border bg-app-panelSoft p-4"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFixIndex(idx)}
-                      className="text-left text-sm text-app-text transition hover:text-white"
-                    >
-                      Suggestion {idx + 1}
-                    </button>
-                    {decision ? (
-                      <span className="rounded-lg border border-app-border px-2 py-1 text-xs text-app-muted">
-                        {decision}
-                      </span>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => onApplyFix(item, idx)}
-                          className="rounded-lg border border-app-border px-2 py-1 text-xs text-emerald-300 transition hover:border-emerald-400/50"
-                        >
-                          Apply Fix
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onIgnoreFix(item, idx)}
-                          className="rounded-lg border border-app-border px-2 py-1 text-xs text-amber-300 transition hover:border-amber-400/50"
-                        >
-                          Ignore
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <p className="mt-2 text-xs text-app-muted">{item.reason}</p>
-                </article>
-              );
-            })}
-          </div>
-
-          {selectedFix && (
+          {selectedIssueFix?.original_code && selectedIssueFix.fixed_code && (
             <div className="overflow-hidden rounded-2xl border border-app-border">
               <div className="border-b border-app-border bg-app-panelSoft px-3 py-2 text-xs text-app-muted">
-                {"Side-by-side diff (original -> suggested)"}
+                {"Issue Fix Diff (original -> suggested)"}
               </div>
               <DiffEditor
                 height="220px"
                 language="plaintext"
-                original={selectedFix.before}
-                modified={selectedFix.after}
+                original={selectedIssueFix.original_code}
+                modified={selectedIssueFix.fixed_code}
                 theme={theme === "dark" ? "vs-dark" : "light"}
                 options={{
                   readOnly: true,
@@ -190,6 +186,114 @@ export function ReviewPanel({
                   scrollBeyondLastLine: false
                 }}
               />
+            </div>
+          )}
+
+          {result.refactor_suggestions.length > 0 && (
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-app-text">Fix-it Suggestions</h3>
+
+              <div className="grid grid-cols-1 gap-3">
+                {result.refactor_suggestions.slice(0, 8).map((item, idx) => {
+                  const key = fixKey(item, idx);
+                  const decision = fixDecisions[key];
+                  return (
+                    <article
+                      key={key}
+                      className="rounded-2xl border border-app-border bg-app-panelSoft p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFixIndex(idx)}
+                          className="text-left text-sm text-app-text transition hover:text-white"
+                        >
+                          Suggestion {idx + 1}
+                        </button>
+                        {decision ? (
+                          <span className="rounded-lg border border-app-border px-2 py-1 text-xs text-app-muted">
+                            {decision}
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onApplyFix(item, idx)}
+                              className="rounded-lg border border-app-border px-2 py-1 text-xs text-emerald-300 transition hover:border-emerald-400/50"
+                            >
+                              Apply Fix
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onIgnoreFix(item, idx)}
+                              className="rounded-lg border border-app-border px-2 py-1 text-xs text-amber-300 transition hover:border-amber-400/50"
+                            >
+                              Ignore
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <p className="mt-2 text-xs text-app-muted">{item.reason}</p>
+                    </article>
+                  );
+                })}
+              </div>
+
+              {selectedFix && (
+                <div className="overflow-hidden rounded-2xl border border-app-border">
+                  <div className="border-b border-app-border bg-app-panelSoft px-3 py-2 text-xs text-app-muted">
+                    {"Side-by-side diff (original -> suggested)"}
+                  </div>
+                  <DiffEditor
+                    height="220px"
+                    language="plaintext"
+                    original={selectedFix.before}
+                    modified={selectedFix.after}
+                    theme={theme === "dark" ? "vs-dark" : "light"}
+                    options={{
+                      readOnly: true,
+                      renderSideBySide: true,
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      scrollBeyondLastLine: false
+                    }}
+                  />
+                </div>
+              )}
+            </section>
+          )}
+        </>
+      ) : (
+        <section className="space-y-3 rounded-2xl border border-app-border bg-app-panelSoft p-4">
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="rounded-xl border border-app-border bg-app-panel px-3 py-2">
+              <p className="text-xs text-app-muted">Time Complexity</p>
+              <p className="mt-1 font-semibold text-app-text">{performance.time_complexity}</p>
+            </div>
+            <div className="rounded-xl border border-app-border bg-app-panel px-3 py-2">
+              <p className="text-xs text-app-muted">Space Complexity</p>
+              <p className="mt-1 font-semibold text-app-text">{performance.space_complexity}</p>
+            </div>
+          </div>
+
+          <p className="text-xs uppercase tracking-wide text-app-muted">
+            Confidence: {performance.confidence}
+          </p>
+
+          {performance.hotspots.length === 0 ? (
+            <p className="text-sm text-app-muted">No major performance hotspots were identified.</p>
+          ) : (
+            <div className="space-y-2">
+              {performance.hotspots.map((hotspot, idx) => (
+                <article key={`${hotspot.line ?? "na"}:${idx}`} className="rounded-xl border border-app-border bg-app-panel p-3">
+                  <p className="text-sm text-app-text">
+                    {hotspot.operation}
+                    {hotspot.line ? ` - Line ${hotspot.line}` : ""}
+                  </p>
+                  <p className="mt-1 text-xs text-amber-300">Estimated: {hotspot.estimated_complexity}</p>
+                  <p className="mt-1 text-xs text-app-muted">{hotspot.recommendation}</p>
+                </article>
+              ))}
             </div>
           )}
         </section>

@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import { useState } from "react";
 
 interface TopBarProps {
-  active: "review" | "dashboard";
+  active: "review" | "dashboard" | "learning";
   onRun?: () => Promise<void>;
   isRunning?: boolean;
   theme: "dark" | "light";
@@ -73,6 +73,9 @@ export function TopBar({
             </NavLink>
             <NavLink to="/dashboard" className={navClass}>
               Dashboard
+            </NavLink>
+            <NavLink to="/learning" className={navClass}>
+              Learning
             </NavLink>
           </nav>
         </div>

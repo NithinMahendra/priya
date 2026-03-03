@@ -4,6 +4,7 @@ from typing import Any
 from app.core.config import BACKEND_DIR, PROJECT_ROOT
 from app.services.ai_reviewer import AIReviewer
 from app.services.dependency_scanner import DependencyScanner
+from app.services.performance_analyzer import PerformanceAnalyzer
 from app.services.project_context import ProjectContextBuilder
 from app.services.security_scanner import SecurityScanner
 from app.services.static_analyzer import StaticAnalyzer
@@ -17,12 +18,14 @@ class ReviewService:
         static_analyzer: StaticAnalyzer | None = None,
         security_scanner: SecurityScanner | None = None,
         dependency_scanner: DependencyScanner | None = None,
+        performance_analyzer: PerformanceAnalyzer | None = None,
         context_builder: ProjectContextBuilder | None = None,
         ai_reviewer: AIReviewer | None = None,
     ) -> None:
         self.static_analyzer = static_analyzer or StaticAnalyzer()
         self.security_scanner = security_scanner or SecurityScanner()
         self.dependency_scanner = dependency_scanner or DependencyScanner()
+        self.performance_analyzer = performance_analyzer or PerformanceAnalyzer()
         self.context_builder = context_builder or ProjectContextBuilder()
         self.ai_reviewer = ai_reviewer or AIReviewer()
 
@@ -51,7 +54,21 @@ class ReviewService:
             include_project_context=include_project_context,
             context_text=context_text,
         )
-        ai_result = await self.ai_reviewer.review(code=code, language=language, context=context)
+        ai_error_detail: str | None = None
+        try:
+            ai_result = await self.ai_reviewer.review(code=code, language=language, context=context)
+        except RuntimeError as exc:
+            if not self._is_quota_exhaustion_error(str(exc)):
+                raise
+            ai_error_detail = str(exc)
+            ai_result = self._quota_degraded_ai_result(error_detail=ai_error_detail)
+        static_performance = self.performance_analyzer.analyze(
+            code=code, language=language, filename=filename
+        )
+        merged_performance = self._merge_performance(
+            static_profile=static_performance,
+            ai_profile=ai_result.get("performance", {}),
+        )
 
         combined_issues = self._merge_issues(
             static_issues + security_issues + dependency_issues + ai_result["issues"]
@@ -62,6 +79,11 @@ class ReviewService:
         all_refactors = self._merge_refactors(ai_refactors + local_refactors)
         technical_debt = self._technical_debt(summary["score"])
         overall = self._overall_assessment(summary)
+        if ai_error_detail:
+            overall = (
+                "Local-only analysis completed. AI semantic review is unavailable due to OpenRouter "
+                "free-tier quota exhaustion."
+            )
 
         return {
             "issues": combined_issues,
@@ -70,6 +92,7 @@ class ReviewService:
             "overall_assessment": overall,
             "refactor_suggestions": all_refactors[:10],
             "provider": ai_result.get("provider", "mock"),
+            "performance": merged_performance,
         }
 
     def _scan_dependencies(
@@ -123,6 +146,8 @@ class ReviewService:
                 "severity": severity,
                 "message": str(issue.get("message", "Potential issue detected.")),
                 "suggested_fix": str(issue.get("suggested_fix", "Inspect and refactor this section.")),
+                "original_code": issue.get("original_code"),
+                "fixed_code": issue.get("fixed_code"),
                 "source": str(issue.get("source", "local")),
                 "confidence": str(issue.get("confidence", "medium")),
             }
@@ -131,7 +156,16 @@ class ReviewService:
                 continue
             current = merged[key]
             if SEVERITY_RANK[candidate["severity"]] > SEVERITY_RANK[current["severity"]]:
+                if not candidate.get("original_code"):
+                    candidate["original_code"] = current.get("original_code")
+                if not candidate.get("fixed_code"):
+                    candidate["fixed_code"] = current.get("fixed_code")
                 merged[key] = candidate
+                continue
+            if not current.get("original_code") and candidate.get("original_code"):
+                current["original_code"] = candidate["original_code"]
+            if not current.get("fixed_code") and candidate.get("fixed_code"):
+                current["fixed_code"] = candidate["fixed_code"]
 
         return sorted(
             merged.values(),
@@ -251,3 +285,111 @@ class ReviewService:
                 }
             )
         return deduped
+
+    def _merge_performance(
+        self,
+        static_profile: dict[str, Any],
+        ai_profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        static_time = str(static_profile.get("time_complexity", "Unknown"))
+        ai_time = str(ai_profile.get("time_complexity", "Unknown"))
+        static_space = str(static_profile.get("space_complexity", "Unknown"))
+        ai_space = str(ai_profile.get("space_complexity", "Unknown"))
+
+        merged_time = ai_time if self._complexity_rank(ai_time) >= self._complexity_rank(static_time) else static_time
+        merged_space = ai_space if self._complexity_rank(ai_space) >= self._complexity_rank(static_space) else static_space
+
+        hotspots: list[dict[str, Any]] = []
+        for source in [static_profile.get("hotspots", []), ai_profile.get("hotspots", [])]:
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                if not isinstance(item, dict):
+                    continue
+                hotspots.append(
+                    {
+                        "line": item.get("line"),
+                        "operation": str(item.get("operation", "Potential hotspot")),
+                        "estimated_complexity": str(
+                            item.get("estimated_complexity", item.get("complexity", merged_time))
+                        ),
+                        "recommendation": str(
+                            item.get("recommendation", "Profile and optimize this path.")
+                        ),
+                        "source": str(item.get("source", "static")),
+                    }
+                )
+
+        confidence = str(ai_profile.get("confidence", static_profile.get("confidence", "medium"))).lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "medium"
+
+        return {
+            "time_complexity": merged_time,
+            "space_complexity": merged_space,
+            "confidence": confidence,
+            "hotspots": hotspots[:10],
+        }
+
+    def _complexity_rank(self, complexity: str) -> int:
+        value = complexity.lower().replace(" ", "")
+        if "n!" in value:
+            return 8
+        if "2^n" in value:
+            return 7
+        if "n^k" in value:
+            return 6
+        if "n^3" in value:
+            return 5
+        if "n^2" in value:
+            return 4
+        if "nlogn" in value:
+            return 3
+        if "o(n)" in value:
+            return 2
+        if "logn" in value:
+            return 1
+        if "o(1)" in value:
+            return 0
+        return 1
+
+    def _is_quota_exhaustion_error(self, detail: str) -> bool:
+        lowered = detail.lower()
+        return (
+            "free-models-per-day" in lowered
+            or "rate limit exceeded" in lowered
+            or "code=429" in lowered
+            or "openrouter error 429" in lowered
+        )
+
+    def _quota_degraded_ai_result(self, error_detail: str) -> dict[str, Any]:
+        message = (
+            "AI semantic review unavailable: OpenRouter free-tier daily quota reached. "
+            "Returning local static/security analysis only."
+        )
+        return {
+            "issues": [
+                {
+                    "line": None,
+                    "type": "Availability",
+                    "severity": "Low",
+                    "message": message,
+                    "suggested_fix": "Wait for daily quota reset or add OpenRouter credits.",
+                    "source": "ai",
+                    "confidence": "high",
+                    "original_code": None,
+                    "fixed_code": None,
+                }
+            ],
+            "summary": {"critical": 0, "high": 0, "medium": 0, "low": 1, "score": 97},
+            "technical_debt": "Low",
+            "overall_assessment": message,
+            "refactor_suggestions": [],
+            "provider": f"openrouter-quota-degraded: {error_detail[:180]}",
+            "performance": {
+                "time_complexity": "Unknown",
+                "space_complexity": "Unknown",
+                "confidence": "low",
+                "hotspots": [],
+            },
+        }

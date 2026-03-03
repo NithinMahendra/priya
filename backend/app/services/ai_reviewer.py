@@ -94,7 +94,9 @@ class AIReviewer:
             f"1) Detect the programming language from code first; language hint is '{language}'.\n"
             "2) Apply language-specific rules (e.g., Java naming, equals usage, exceptions, streams).\n"
             f"3) Validate line numbers against source range 1..{line_count}; omit any invalid line.\n"
-            "4) Return strict JSON only."
+            "4) For each actionable issue, include original_code and fixed_code snippets when possible.\n"
+            "5) Include performance with time_complexity, space_complexity, confidence, hotspots.\n"
+            "6) Return strict JSON only."
         )
 
     def _normalize(self, payload: dict[str, Any], line_count: int) -> dict[str, Any]:
@@ -121,6 +123,8 @@ class AIReviewer:
                     "severity": severity,
                     "message": str(issue.get("message", "No message provided.")),
                     "suggested_fix": str(issue.get("suggested_fix", "Review this section.")),
+                    "original_code": self._normalize_snippet(issue.get("original_code")),
+                    "fixed_code": self._normalize_snippet(issue.get("fixed_code")),
                     "source": str(issue.get("source", "ai")),
                     "confidence": str(issue.get("confidence", "medium")),
                 }
@@ -146,6 +150,7 @@ class AIReviewer:
             payload.get("overall_assessment")
             or "Code needs refactoring for maintainability and security hardening."
         )
+        performance = self._normalize_performance(payload.get("performance"), line_count=line_count)
 
         return {
             "issues": issues,
@@ -153,6 +158,52 @@ class AIReviewer:
             "technical_debt": technical_debt,
             "overall_assessment": overall_assessment,
             "refactor_suggestions": refactor_suggestions[:8],
+            "performance": performance,
+        }
+
+    def _normalize_snippet(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        snippet = str(value).strip()
+        return snippet or None
+
+    def _normalize_performance(self, payload: Any, line_count: int) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            payload = {}
+        raw_hotspots = payload.get("hotspots", [])
+        if not isinstance(raw_hotspots, list):
+            raw_hotspots = []
+
+        hotspots: list[dict[str, Any]] = []
+        for hotspot in raw_hotspots:
+            if not isinstance(hotspot, dict):
+                continue
+            line = self._normalize_line(hotspot.get("line"), line_count=line_count)
+            if hotspot.get("line") is not None and line is None:
+                continue
+            hotspots.append(
+                {
+                    "line": line,
+                    "operation": str(hotspot.get("operation", "Potential hotspot")),
+                    "estimated_complexity": str(
+                        hotspot.get("estimated_complexity", payload.get("time_complexity", "Unknown"))
+                    ),
+                    "recommendation": str(
+                        hotspot.get("recommendation", "Profile this path with production-like data.")
+                    ),
+                    "source": str(hotspot.get("source", "ai")),
+                }
+            )
+
+        confidence = str(payload.get("confidence", "medium")).strip().lower() or "medium"
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "medium"
+
+        return {
+            "time_complexity": str(payload.get("time_complexity", "Unknown")),
+            "space_complexity": str(payload.get("space_complexity", "Unknown")),
+            "confidence": confidence,
+            "hotspots": hotspots[:8],
         }
 
     def _normalize_line(self, value: Any, line_count: int) -> int | None:

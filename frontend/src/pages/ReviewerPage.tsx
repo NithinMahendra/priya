@@ -92,6 +92,7 @@ export function ReviewerPage({
         token
       );
       setResult(response);
+      localStorage.setItem("learning:last_submission_id", String(response.submission_id));
       setIssueDecisions({});
       setFixDecisions({});
       onReviewCompleted();

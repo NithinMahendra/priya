@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getCurrentUser, login, register } from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
+import { LearningHub } from "./pages/LearningHub";
 import { ReviewerPage } from "./pages/ReviewerPage";
 
 function parseJwtSubject(token: string): string | null {
@@ -119,6 +120,20 @@ export default function App(): JSX.Element {
               theme={theme}
               onToggleTheme={toggleTheme}
               refreshSignal={dashboardRefresh}
+              onLogin={handleLogin}
+              onRegister={handleRegister}
+              onLogout={handleLogout}
+            />
+          }
+        />
+        <Route
+          path="/learning"
+          element={
+            <LearningHub
+              token={token}
+              username={username}
+              theme={theme}
+              onToggleTheme={toggleTheme}
               onLogin={handleLogin}
               onRegister={handleRegister}
               onLogout={handleLogout}

@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect, text
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -34,9 +35,24 @@ app.add_middleware(
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
+def ensure_runtime_schema() -> None:
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        if "users" not in inspector.get_table_names():
+            return
+        columns = {item["name"] for item in inspector.get_columns("users")}
+        if "quiz_score" not in columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN quiz_score INTEGER NOT NULL DEFAULT 0"))
+            logger.info("runtime_schema_update added_column=users.quiz_score")
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    try:
+        ensure_runtime_schema()
+    except Exception as exc:
+        logger.warning("runtime_schema_update_failed error=%s", exc)
     diagnostics = get_provider_diagnostics()
     logger.info(
         "llm_startup_config provider=%s effective_provider=%s model_mode=%s free_only=%s api_base_host=%s mock_fallback_allowed=%s",

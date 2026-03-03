@@ -1,5 +1,9 @@
 import type {
   DashboardMetrics,
+  LearningQuizRequest,
+  LearningQuizResponse,
+  LearningQuizSubmitRequest,
+  LearningQuizSubmitResponse,
   ReviewAction,
   ReviewActionType,
   ReviewRequest,
@@ -65,8 +69,8 @@ export async function login(username: string, password: string): Promise<string>
 
 export async function getCurrentUser(
   token: string
-): Promise<{ id: number; username: string; created_at: string }> {
-  return request<{ id: number; username: string; created_at: string }>(
+): Promise<{ id: number; username: string; quiz_score: number; created_at: string }> {
+  return request<{ id: number; username: string; quiz_score: number; created_at: string }>(
     "/auth/me",
     "GET",
     undefined,
@@ -95,4 +99,18 @@ export async function createReviewAction(
   token: string
 ): Promise<ReviewAction> {
   return request<ReviewAction>(`/reviews/${submissionId}/actions`, "POST", payload, token);
+}
+
+export async function generateLearningQuiz(
+  payload: LearningQuizRequest,
+  token: string
+): Promise<LearningQuizResponse> {
+  return request<LearningQuizResponse>("/learning/quiz/generate", "POST", payload, token);
+}
+
+export async function submitLearningQuiz(
+  payload: LearningQuizSubmitRequest,
+  token: string
+): Promise<LearningQuizSubmitResponse> {
+  return request<LearningQuizSubmitResponse>("/learning/quiz/submit", "POST", payload, token);
 }

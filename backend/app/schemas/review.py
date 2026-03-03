@@ -19,6 +19,9 @@ class ReviewIssue(BaseModel):
     message: str
     suggested_fix: str
     source: str = "local"
+    confidence: str = "medium"
+    original_code: str | None = None
+    fixed_code: str | None = None
 
 
 class ReviewSummary(BaseModel):
@@ -33,6 +36,21 @@ class RefactorSuggestion(BaseModel):
     before: str
     after: str
     reason: str
+
+
+class PerformanceHotspot(BaseModel):
+    line: int | None = None
+    operation: str
+    estimated_complexity: str
+    recommendation: str
+    source: str = "static"
+
+
+class PerformanceProfile(BaseModel):
+    time_complexity: str = "Unknown"
+    space_complexity: str = "Unknown"
+    confidence: str = "medium"
+    hotspots: list[PerformanceHotspot] = Field(default_factory=list)
 
 
 class ReviewRequest(BaseModel):
@@ -51,6 +69,7 @@ class ReviewResponse(BaseModel):
     technical_debt: str
     overall_assessment: str
     refactor_suggestions: list[RefactorSuggestion] = Field(default_factory=list)
+    performance: PerformanceProfile = Field(default_factory=PerformanceProfile)
 
 
 class ReviewRunResponse(ReviewResponse):

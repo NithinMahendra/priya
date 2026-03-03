@@ -21,4 +21,6 @@ async def test_review_service_returns_structured_response() -> None:
     assert "technical_debt" in result
     assert "overall_assessment" in result
     assert "refactor_suggestions" in result
+    assert "performance" in result
+    assert "time_complexity" in result["performance"]
     assert result["summary"]["critical"] >= 1

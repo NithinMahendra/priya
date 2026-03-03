@@ -22,6 +22,9 @@ class LLMProvider(ABC):
     ) -> dict[str, Any]:
         pass
 
+    async def generate_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        raise NotImplementedError("Provider does not support generic JSON generation.")
+
 
 class MockProvider(LLMProvider):
     def __init__(self, model: str = "mock-model") -> None:
@@ -43,6 +46,8 @@ class MockProvider(LLMProvider):
                         "severity": "High",
                         "message": "Use of eval() found; this may execute untrusted input.",
                         "suggested_fix": "Replace eval() with safe parsing or explicit mappings.",
+                        "original_code": line.strip(),
+                        "fixed_code": "value = safe_parse(user_input)",
                         "source": "ai",
                     }
                 )
@@ -61,6 +66,8 @@ class MockProvider(LLMProvider):
                         "severity": "Critical",
                         "message": "Possible SQL injection vulnerability.",
                         "suggested_fix": "Use parameterized queries.",
+                        "original_code": line.strip(),
+                        "fixed_code": 'cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))',
                         "source": "ai",
                     }
                 )
@@ -91,7 +98,18 @@ class MockProvider(LLMProvider):
             "technical_debt": _technical_debt_from_score(summary["score"]),
             "overall_assessment": _overall_assessment(summary),
             "refactor_suggestions": refactor_suggestions[:5],
+            "performance": {
+                "time_complexity": "O(n^2)" if any("for" in line or "while" in line for line in lines) else "O(n)",
+                "space_complexity": "O(1)",
+                "confidence": "low",
+                "hotspots": [],
+            },
         }
+
+    async def generate_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        _ = system_prompt
+        concept = _extract_quiz_concept(user_prompt)
+        return _mock_quiz_for_concept(concept)
 
 
 @dataclass
@@ -138,14 +156,34 @@ class OpenRouterProvider(LLMProvider):
     async def analyze_code(
         self, code: str, language: str = "python", context: str | None = None
     ) -> dict[str, Any]:
-        started_at = time.monotonic()
         system_prompt, user_prompt = _build_prompts(code=code, language=language, context=context)
+        return await self._request_json_payload(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            purpose="review",
+        )
+
+    async def generate_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        return await self._request_json_payload(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            purpose="task",
+        )
+
+    async def _request_json_payload(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        purpose: str,
+    ) -> dict[str, Any]:
+        started_at = time.monotonic()
         needed_tokens = _estimate_tokens(system_prompt) + _estimate_tokens(user_prompt)
         candidates = await self._pick_candidate_models(needed_tokens=needed_tokens)
         if not candidates:
             raise RuntimeError("No eligible OpenRouter models are available.")
         logger.info(
-            "openrouter_candidates_selected model_mode=%s needed_tokens=%s candidate_count=%s top_candidates=%s",
+            "openrouter_candidates_selected purpose=%s model_mode=%s needed_tokens=%s candidate_count=%s top_candidates=%s",
+            purpose,
             self.model,
             needed_tokens,
             len(candidates),
@@ -172,7 +210,8 @@ class OpenRouterProvider(LLMProvider):
                 self.last_model = model_id
                 self.last_provider_name = "openrouter"
                 logger.info(
-                    "openrouter_review_success model=%s candidate_index=%s fallback_attempted=%s elapsed_seconds=%.2f",
+                    "openrouter_json_success purpose=%s model=%s candidate_index=%s fallback_attempted=%s elapsed_seconds=%.2f",
+                    purpose,
                     model_id,
                     index,
                     fallback_attempted,
@@ -182,7 +221,8 @@ class OpenRouterProvider(LLMProvider):
             except _RateLimitedError as exc:
                 self._mark_rate_limited(model_id=model_id, retry_after_seconds=exc.retry_after_seconds)
                 logger.warning(
-                    "openrouter_model_rate_limited model=%s candidate_index=%s retry_after_seconds=%s",
+                    "openrouter_model_rate_limited purpose=%s model=%s candidate_index=%s retry_after_seconds=%s",
+                    purpose,
                     model_id,
                     index,
                     exc.retry_after_seconds,
@@ -194,7 +234,8 @@ class OpenRouterProvider(LLMProvider):
                 elif 500 <= exc.status_code <= 599:
                     self._mark_model_unavailable(model_id=model_id, cooldown_seconds=120)
                 logger.warning(
-                    "openrouter_model_http_error model=%s candidate_index=%s status=%s error=%s",
+                    "openrouter_model_http_error purpose=%s model=%s candidate_index=%s status=%s error=%s",
+                    purpose,
                     model_id,
                     index,
                     exc.status_code,
@@ -203,7 +244,8 @@ class OpenRouterProvider(LLMProvider):
                 errors.append(f"{model_id}: {exc}")
             except Exception as exc:
                 logger.warning(
-                    "openrouter_model_failed model=%s candidate_index=%s fallback_attempted=%s error=%s",
+                    "openrouter_model_failed purpose=%s model=%s candidate_index=%s fallback_attempted=%s error=%s",
+                    purpose,
                     model_id,
                     index,
                     fallback_attempted,
@@ -212,7 +254,7 @@ class OpenRouterProvider(LLMProvider):
                 errors.append(f"{model_id}: {exc}")
 
         raise RuntimeError(
-            "OpenRouter failed across candidate models. "
+            f"OpenRouter failed across candidate models for {purpose}. "
             f"Tried {len(candidates)} models. Details: {' | '.join(errors[:5])}"
         )
 
@@ -520,13 +562,17 @@ class _ModelHttpError(Exception):
 def _build_prompts(code: str, language: str, context: str | None) -> tuple[str, str]:
     system_prompt = (
         "You are an expert software reviewer. Return valid JSON only with keys: "
-        "issues, summary, technical_debt, overall_assessment, refactor_suggestions. "
-        "Each issue must include line, type, severity (Critical/High/Medium/Low), message, suggested_fix."
+        "issues, summary, technical_debt, overall_assessment, refactor_suggestions, performance. "
+        "Each issue must include line, type, severity (Critical/High/Medium/Low), message, suggested_fix. "
+        "When possible include original_code and fixed_code snippets for each issue. "
+        "Performance must include time_complexity, space_complexity, confidence, hotspots."
     )
     context_block = (context or "No repository context provided.").strip()[:3500]
     user_prompt = (
         f"Language hint: {language}\n"
         "Analyze this source code for correctness, maintainability, performance, and security.\n"
+        "Validate that every issue line number exists in the source.\n"
+        "Use language-specific best practices.\n"
         "Use repository context to infer architectural intent when relevant.\n\n"
         f"Repository Context:\n{context_block}\n\n"
         f"Code:\n```{language}\n{code}\n```"
@@ -837,3 +883,58 @@ def _overall_assessment(summary: dict[str, int]) -> str:
     if summary["medium"] > 0:
         return "Code quality is acceptable but refactoring is recommended."
     return "Code is in good condition with minor improvements suggested."
+
+
+def _extract_quiz_concept(prompt: str) -> str:
+    marker = "concept:"
+    lowered = prompt.lower()
+    if marker not in lowered:
+        return "secure coding"
+    idx = lowered.index(marker)
+    tail = prompt[idx + len(marker) :].strip()
+    if not tail:
+        return "secure coding"
+    first_line = tail.splitlines()[0].strip()
+    return first_line[:80] or "secure coding"
+
+
+def _mock_quiz_for_concept(concept: str) -> dict[str, Any]:
+    topic = concept.strip() or "secure coding"
+    return {
+        "concept": topic,
+        "questions": [
+            {
+                "question": f"What is the best first defense against {topic} defects?",
+                "options": [
+                    "Input validation and explicit allowlists",
+                    "Ignoring user input edge cases",
+                    "Using debug logs in production",
+                    "Disabling error handling",
+                ],
+                "correct_option": 0,
+                "explanation": "Validation and allowlists reduce exploit surface and runtime surprises.",
+            },
+            {
+                "question": f"How should you verify fixes related to {topic}?",
+                "options": [
+                    "Write focused unit and integration tests",
+                    "Rely on manual checks only",
+                    "Skip tests after refactoring",
+                    "Test only happy paths",
+                ],
+                "correct_option": 0,
+                "explanation": "Automated tests are required to prevent regressions.",
+            },
+            {
+                "question": "Which practice improves long-term code quality?",
+                "options": [
+                    "Small refactors plus code review",
+                    "Patching without tests",
+                    "Copy-pasting fixes",
+                    "Silencing all warnings",
+                ],
+                "correct_option": 0,
+                "explanation": "Small verified refactors keep risk low and quality high.",
+            },
+        ],
+    }
