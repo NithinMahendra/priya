@@ -27,3 +27,19 @@ def test_static_analyzer_detects_key_patterns() -> None:
     assert any("TODO" in message for message in messages)
     assert any("lines long" in message for message in messages)
     assert any("nested loops" in message.lower() for message in messages)
+
+
+def test_static_analyzer_detects_java_missing_semicolon() -> None:
+    code = "\n".join(
+        [
+            "class arrayleftshift{",
+            "    public static void main(String[] args){",
+            '        System.out.println("niy")',
+            "    }",
+            "}",
+        ]
+    )
+    analyzer = StaticAnalyzer()
+    issues = analyzer.analyze(code=code, language="java", filename="Sample.java")
+    messages = {item["message"] for item in issues}
+    assert any("missing semicolon" in message.lower() for message in messages)

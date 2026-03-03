@@ -1,7 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 
-import { login, register } from "./api/client";
+import { getCurrentUser, login, register } from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ReviewerPage } from "./pages/ReviewerPage";
 
@@ -22,21 +22,58 @@ function parseJwtSubject(token: string): string | null {
 
 export default function App(): JSX.Element {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
+  const [validatedUsername, setValidatedUsername] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">(
     () => (localStorage.getItem("theme") as "dark" | "light") ?? "dark"
   );
   const [dashboardRefresh, setDashboardRefresh] = useState(0);
-  const username = useMemo(() => (token ? parseJwtSubject(token) : null), [token]);
+  const username = useMemo(
+    () => validatedUsername ?? (token ? parseJwtSubject(token) : null),
+    [token, validatedUsername]
+  );
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (!token) {
+      setValidatedUsername(null);
+      return;
+    }
+    let active = true;
+    const validateToken = async () => {
+      try {
+        const user = await getCurrentUser(token);
+        if (!active) {
+          return;
+        }
+        setValidatedUsername(user.username);
+      } catch {
+        if (!active) {
+          return;
+        }
+        localStorage.removeItem("token");
+        setToken(null);
+        setValidatedUsername(null);
+      }
+    };
+    void validateToken();
+    const intervalId = window.setInterval(() => {
+      void validateToken();
+    }, 60000);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [token]);
+
   const handleLogin = async (inputUsername: string, password: string) => {
     const accessToken = await login(inputUsername, password);
     localStorage.setItem("token", accessToken);
     setToken(accessToken);
+    setValidatedUsername(inputUsername);
   };
 
   const handleRegister = async (inputUsername: string, password: string) => {
@@ -44,11 +81,13 @@ export default function App(): JSX.Element {
     const accessToken = await login(inputUsername, password);
     localStorage.setItem("token", accessToken);
     setToken(accessToken);
+    setValidatedUsername(inputUsername);
   };
 
   const handleLogout = () => {
     localStorage.removeItem("token");
     setToken(null);
+    setValidatedUsername(null);
   };
 
   const toggleTheme = () => setTheme((prev) => (prev === "dark" ? "light" : "dark"));

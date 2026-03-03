@@ -107,6 +107,11 @@ export function ReviewPanel({
       <article className="rounded-2xl border border-app-border bg-app-panelSoft p-4">
         <p className="text-xs uppercase tracking-wider text-app-muted">Assessment</p>
         <p className="mt-2 text-sm text-app-text">{result.overall_assessment}</p>
+        {result.provider === "mock" && (
+          <p className="mt-2 text-xs text-amber-300">
+            Mock provider is active. Configure OpenRouter to get full semantic analysis quality.
+          </p>
+        )}
       </article>
 
       <IssueList

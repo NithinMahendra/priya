@@ -1,17 +1,19 @@
 import pytest
 
+from app.services.ai_reviewer import AIReviewer
+from app.services.llm_provider import MockProvider
 from app.services.review_service import ReviewService
 
 
 @pytest.mark.asyncio
 async def test_review_service_returns_structured_response() -> None:
     code = """
-def process(user_input):
-    query = "SELECT * FROM users WHERE name = '" + user_input + "'"
-    cursor.execute(query)
-    return eval(user_input)
+    def process(user_input):
+        query = "SELECT * FROM users WHERE name = '" + user_input + "'"
+        cursor.execute(query)
+        return eval(user_input)
 """.strip()
-    service = ReviewService()
+    service = ReviewService(ai_reviewer=AIReviewer(provider=MockProvider()))
     result = await service.run(code=code, language="python")
 
     assert "issues" in result

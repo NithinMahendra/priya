@@ -5,7 +5,7 @@ Production-grade AI-powered code review platform with:
 - Multi-language static analysis (Python, JavaScript/TypeScript, Java heuristics)
 - Security scanning with SSRF, SQLi, deserialization, command execution checks
 - Dependency vulnerability checks (`requirements.txt` / `package.json`)
-- Pluggable AI semantic review (OpenAI or mock fallback)
+- Pluggable AI semantic review (`auto`/OpenRouter/Mock)
 - Context-aware AI review (optional README/project structure context)
 - Severity scoring and quality score
 - Persisted submissions and dashboard analytics
@@ -23,7 +23,7 @@ Production-grade AI-powered code review platform with:
   - `dependency_scanner.py`
   - `project_context.py`
   - `ai_reviewer.py`
-  - `llm_provider.py` (`LLMProvider`, `OpenAIProvider`, `MockProvider`)
+  - `llm_provider.py` (`LLMProvider`, `OpenRouterProvider`, `MockProvider`)
   - `review_service.py` orchestration layer
 - `app/models`: SQLAlchemy models (`User`, `Submission`, `ReviewAction`)
 - `app/schemas`: Pydantic contracts
@@ -48,8 +48,16 @@ Production-grade AI-powered code review platform with:
 
 Environment-driven provider selection:
 
-- `LLM_PROVIDER=openai` and `OPENAI_API_KEY` set: use `OpenAIProvider`
-- Missing key or invalid provider: automatic fallback to `MockProvider`
+- `LLM_PROVIDER=auto`: use `OpenRouterProvider` when `OPENROUTER_API_KEY` is present, else `MockProvider`
+- `LLM_PROVIDER=openrouter`: requires `OPENROUTER_API_KEY`, otherwise request fails with clear error
+- `LLM_ALLOW_MOCK_FALLBACK=false` by default to avoid silent degradation
+
+OpenRouter selection strategy:
+
+- `LLM_MODEL=auto` dynamically fetches live models from `GET /api/v1/models`
+- Filters to zero-cost models when `OPENROUTER_FREE_ONLY=true`
+- Scores candidates for code review based on context window, code-oriented model names, and observed rate-limit headroom
+- Tracks returned rate-limit headers and temporarily avoids throttled models
 
 The rest of the system only calls `LLMProvider` abstraction.
 
@@ -113,6 +121,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 API docs: `http://localhost:8000/docs`
+Health diagnostics: `http://localhost:8000/api/v1/health/provider`
 
 ### 3. Run frontend
 
@@ -123,6 +132,15 @@ npm run dev
 ```
 
 Frontend: `http://localhost:5173`
+
+### Single-process verification (Windows / PowerShell)
+
+```powershell
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "uvicorn app.main:app" } | Select-Object ProcessId,CommandLine
+Get-NetTCPConnection -LocalPort 8000 -State Listen
+```
+
+Expected: one backend process for `app.main:app` and one listener on `127.0.0.1:8000`.
 
 ## Docker Setup
 
@@ -182,3 +200,15 @@ curl -X POST http://localhost:8000/api/v1/reviews/run \
 cd backend
 pytest
 ```
+
+## OpenRouter troubleshooting
+
+- Check runtime provider: `GET /api/v1/health/provider`
+- If frontend shows stale behavior, confirm `VITE_API_URL=http://localhost:8000/api/v1` and that only one backend process is listening on `8000`
+- With `LLM_ALLOW_MOCK_FALLBACK=false`, `429` and quota errors are returned directly from OpenRouter instead of silently switching to mock
+
+## Security notes
+
+- Rotate API keys immediately if they appear in logs, screenshots, or terminal output
+- Do not paste raw API keys in issues, PR comments, or chat transcripts
+- Keep `.env` out of source control and run periodic secret scanning on the repository

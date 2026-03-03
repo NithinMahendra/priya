@@ -21,16 +21,21 @@ async def run_review(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> ReviewRunResponse:
-    review_service = ReviewService()
-    result = await review_service.run(
-        code=payload.code,
-        language=payload.language,
-        filename=payload.filename,
-        include_project_context=payload.include_project_context,
-        context_text=payload.context_text,
-        dependency_manifest=payload.dependency_manifest,
-        manifest_type=payload.manifest_type,
-    )
+    try:
+        review_service = ReviewService()
+        result = await review_service.run(
+            code=payload.code,
+            language=payload.language,
+            filename=payload.filename,
+            include_project_context=payload.include_project_context,
+            context_text=payload.context_text,
+            dependency_manifest=payload.dependency_manifest,
+            manifest_type=payload.manifest_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     submission = Submission(
         user_id=current_user.id,

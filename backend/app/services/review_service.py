@@ -36,7 +36,7 @@ class ReviewService:
         dependency_manifest: str | None = None,
         manifest_type: str | None = None,
     ) -> dict[str, Any]:
-        static_issues = self.static_analyzer.analyze(code=code, language=language)
+        static_issues = self.static_analyzer.analyze(code=code, language=language, filename=filename)
         security_issues = self.security_scanner.scan(code=code, language=language)
 
         dependency_issues = self._scan_dependencies(
@@ -61,7 +61,7 @@ class ReviewService:
         ai_refactors = ai_result.get("refactor_suggestions", [])
         all_refactors = self._merge_refactors(ai_refactors + local_refactors)
         technical_debt = self._technical_debt(summary["score"])
-        overall = ai_result.get("overall_assessment") or self._overall_assessment(summary)
+        overall = self._overall_assessment(summary)
 
         return {
             "issues": combined_issues,

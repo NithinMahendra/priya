@@ -12,6 +12,7 @@ class Settings(BaseSettings):
         env_file=(BACKEND_DIR / ".env", PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     APP_NAME: str = "AI Code Reviewer"
@@ -24,9 +25,16 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
 
-    LLM_PROVIDER: str = "mock"
-    LLM_MODEL: str = "gpt-4.1-mini"
-    OPENAI_API_KEY: str | None = None
+    LLM_PROVIDER: str = "auto"
+    LLM_MODEL: str = "auto"
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_API_BASE: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_SITE_URL: str | None = None
+    OPENROUTER_APP_NAME: str = "AI Code Reviewer"
+    OPENROUTER_FREE_ONLY: bool = True
+    OPENROUTER_MODEL_CACHE_SECONDS: int = 300
+    OPENROUTER_TIMEOUT_SECONDS: float = 45.0
+    LLM_ALLOW_MOCK_FALLBACK: bool = False
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_SECONDS: float = 0.75
     PROJECT_CONTEXT_MAX_CHARS: int = 4000
@@ -44,11 +52,15 @@ class Settings(BaseSettings):
     @property
     def effective_llm_provider(self) -> str:
         provider = self.LLM_PROVIDER.strip().lower()
-        if provider == "openai" and not self.OPENAI_API_KEY:
+        if provider in {"", "auto"}:
+            if (self.OPENROUTER_API_KEY or "").strip():
+                return "openrouter"
             return "mock"
-        if provider not in {"openai", "mock"}:
+        if provider == "openrouter":
+            return "openrouter" if (self.OPENROUTER_API_KEY or "").strip() else "mock"
+        if provider == "mock":
             return "mock"
-        return provider
+        return "mock"
 
     @property
     def cors_origins_list(self) -> list[str]:

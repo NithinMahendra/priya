@@ -8,11 +8,25 @@ OpenAPI JSON: `GET /openapi.json`
 ## Health
 
 - `GET /health`
+- `GET /health/provider`
 
 Response:
 
 ```json
 { "status": "ok" }
+```
+
+`/health/provider` response:
+
+```json
+{
+  "provider": "openrouter",
+  "effective_provider": "openrouter",
+  "model_mode": "auto",
+  "free_only": true,
+  "api_base_host": "openrouter.ai",
+  "mock_fallback_allowed": false
+}
 ```
 
 ## Auth

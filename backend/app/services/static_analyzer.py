@@ -69,9 +69,14 @@ class StaticAnalyzer:
     JAVA_METHOD_START = re.compile(
         r"^\s*(public|private|protected)?\s*(static\s+)?[\w<>\[\]]+\s+\w+\s*\(.*\)\s*\{"
     )
+    JAVA_CONTROL_PREFIX = re.compile(
+        r"^(if|for|while|switch|catch|try|else|do|class|interface|enum|package|import|@)\b"
+    )
 
-    def analyze(self, code: str, language: str = "python") -> list[dict[str, Any]]:
-        normalized_language = self._normalize_language(language)
+    def analyze(
+        self, code: str, language: str = "python", filename: str | None = None
+    ) -> list[dict[str, Any]]:
+        normalized_language = self._resolve_language(language, filename)
         issues: list[StaticIssue] = []
         lines = code.splitlines()
 
@@ -89,6 +94,21 @@ class StaticAnalyzer:
             issues.extend(self._c_style_complexity_checks(lines))
 
         return [item.to_dict() for item in issues]
+
+    def _resolve_language(self, language: str, filename: str | None) -> str:
+        if filename:
+            suffix = Path(filename).suffix.lower()
+            mapping = {
+                ".py": "python",
+                ".js": "javascript",
+                ".jsx": "javascript",
+                ".ts": "typescript",
+                ".tsx": "typescript",
+                ".java": "java",
+            }
+            if suffix in mapping:
+                return mapping[suffix]
+        return self._normalize_language(language)
 
     def _normalize_language(self, language: str) -> str:
         value = language.strip().lower()
@@ -290,6 +310,8 @@ class StaticAnalyzer:
         issues: list[StaticIssue] = []
         issues.extend(self._c_style_complexity_checks(lines))
         issues.extend(self._c_style_function_size_checks(lines, self.JAVA_METHOD_START, "method"))
+        issues.extend(self._java_regex_pitfalls(lines))
+        issues.extend(self._java_syntax_sanity_checks(lines))
 
         synchronized_methods = [idx for idx, line in enumerate(lines, start=1) if "synchronized" in line]
         if len(synchronized_methods) > 5:
@@ -300,6 +322,86 @@ class StaticAnalyzer:
                     severity="Low",
                     message="Heavy synchronized usage may reduce throughput.",
                     suggested_fix="Prefer finer-grained locking or lock-free structures when possible.",
+                )
+            )
+
+        return issues
+
+    def _java_regex_pitfalls(self, lines: list[str]) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        class_pattern = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)")
+        pascal_case = re.compile(r"^[A-Z][A-Za-z0-9]*$")
+        string_eq_pattern = re.compile(
+            r'(\"[^\"]*\"\s*==\s*[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*==\s*\"[^\"]*\")'
+        )
+
+        for idx, line in enumerate(lines, start=1):
+            class_match = class_pattern.search(line)
+            if class_match:
+                class_name = class_match.group(1)
+                if not pascal_case.match(class_name):
+                    issues.append(
+                        StaticIssue(
+                            line=idx,
+                            issue_type="Maintainability",
+                            severity="Low",
+                            message=f"Java class `{class_name}` is not PascalCase.",
+                            suggested_fix="Rename class using PascalCase naming convention.",
+                        )
+                    )
+            if string_eq_pattern.search(line):
+                issues.append(
+                    StaticIssue(
+                        line=idx,
+                        issue_type="Correctness",
+                        severity="Medium",
+                        message="Possible Java String comparison using `==`.",
+                        suggested_fix="Use `.equals()` or `.equalsIgnoreCase()` for String comparison.",
+                    )
+                )
+        return issues
+
+    def _java_syntax_sanity_checks(self, lines: list[str]) -> list[StaticIssue]:
+        issues: list[StaticIssue] = []
+        open_braces = 0
+        close_braces = 0
+
+        for idx, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            open_braces += stripped.count("{")
+            close_braces += stripped.count("}")
+
+            if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                continue
+            if stripped.endswith(("{", "}", ";", ":")):
+                continue
+            if self.JAVA_CONTROL_PREFIX.search(stripped):
+                continue
+
+            likely_statement = (
+                "System.out." in stripped
+                or "=" in stripped
+                or (("(" in stripped and ")" in stripped) and not stripped.startswith("new "))
+            )
+            if likely_statement:
+                issues.append(
+                    StaticIssue(
+                        line=idx,
+                        issue_type="Syntax",
+                        severity="High",
+                        message="Possible missing semicolon in Java statement.",
+                        suggested_fix="Terminate Java statements with `;`.",
+                    )
+                )
+
+        if open_braces != close_braces:
+            issues.append(
+                StaticIssue(
+                    line=1,
+                    issue_type="Syntax",
+                    severity="High",
+                    message="Unbalanced braces detected in Java source.",
+                    suggested_fix="Ensure all `{` braces have matching `}` braces.",
                 )
             )
 

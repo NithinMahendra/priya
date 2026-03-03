@@ -49,15 +49,22 @@ export async function register(username: string, password: string): Promise<void
 }
 
 export async function login(username: string, password: string): Promise<string> {
-  const formData = new URLSearchParams();
-  formData.append("username", username);
-  formData.append("password", password);
-  const tokenResponse = await request<{ access_token: string }>(
-    "/auth/token",
-    "POST",
-    formData
-  );
+  const tokenResponse = await request<{ access_token: string }>("/auth/login", "POST", {
+    username,
+    password
+  });
   return tokenResponse.access_token;
+}
+
+export async function getCurrentUser(
+  token: string
+): Promise<{ id: number; username: string; created_at: string }> {
+  return request<{ id: number; username: string; created_at: string }>(
+    "/auth/me",
+    "GET",
+    undefined,
+    token
+  );
 }
 
 export async function runReview(
