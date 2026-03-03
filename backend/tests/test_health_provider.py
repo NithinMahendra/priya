@@ -17,8 +17,8 @@ def test_health_provider_shape() -> None:
         "api_base_host",
         "mock_fallback_allowed",
     }
-    assert payload["provider"] in {"openrouter", "mock"}
-    assert payload["effective_provider"] in {"openrouter", "mock"}
+    assert payload["provider"] in {"groq", "openrouter", "mock"}
+    assert payload["effective_provider"] in {"groq", "openrouter", "mock"}
     assert isinstance(payload["model_mode"], str) and payload["model_mode"]
     assert isinstance(payload["free_only"], bool)
     assert isinstance(payload["api_base_host"], str) and payload["api_base_host"]
@@ -27,7 +27,9 @@ def test_health_provider_shape() -> None:
 
 def test_health_provider_does_not_expose_api_key() -> None:
     original = settings.OPENROUTER_API_KEY
+    original_groq = settings.GROQ_API_KEY
     settings.OPENROUTER_API_KEY = "sk-or-v1-test-secret-should-not-leak"
+    settings.GROQ_API_KEY = "gsk_test_secret_should_not_leak"
     try:
         client = TestClient(app)
         response = client.get("/api/v1/health/provider")
@@ -35,7 +37,10 @@ def test_health_provider_does_not_expose_api_key() -> None:
         payload = response.json()
         serialized = str(payload)
         assert "OPENROUTER_API_KEY" not in serialized
+        assert "GROQ_API_KEY" not in serialized
         assert "sk-or-v1" not in serialized
+        assert "gsk_test_secret_should_not_leak" not in serialized
         assert "test-secret-should-not-leak" not in serialized
     finally:
         settings.OPENROUTER_API_KEY = original
+        settings.GROQ_API_KEY = original_groq

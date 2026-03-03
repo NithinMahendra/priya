@@ -24,3 +24,11 @@ async def test_review_service_returns_structured_response() -> None:
     assert "performance" in result
     assert "time_complexity" in result["performance"]
     assert result["summary"]["critical"] >= 1
+    assert result["performance"]["time_complexity"] != "Unknown"
+    enriched_security = [
+        issue
+        for issue in result["issues"]
+        if issue.get("type") == "Security" and issue.get("line") is not None
+    ]
+    assert any(item.get("original_code") for item in enriched_security)
+    assert any(item.get("fixed_code") for item in enriched_security)

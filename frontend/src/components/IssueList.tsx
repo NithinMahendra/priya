@@ -57,7 +57,7 @@ export function IssueList({
               </span>
 
               <div className="flex items-center gap-2">
-                {onViewFix && issue.original_code && issue.fixed_code && (
+                {onViewFix && issue.original_code && issue.fixed_code !== undefined && issue.fixed_code !== null && (
                   <button
                     type="button"
                     onClick={() => onViewFix(issue, idx)}

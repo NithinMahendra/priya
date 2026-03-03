@@ -112,6 +112,113 @@ class MockProvider(LLMProvider):
         return _mock_quiz_for_concept(concept)
 
 
+class GroqProvider(LLMProvider):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "llama-3.3-70b-versatile",
+        api_base: str = "https://api.groq.com/openai/v1",
+        timeout_seconds: float = 30.0,
+        max_retries: int = 2,
+        retry_base_seconds: float = 1.0,
+    ) -> None:
+        self.api_key = api_key.strip()
+        self.model = model.strip() or "llama-3.3-70b-versatile"
+        self.api_base = api_base.rstrip("/")
+        self.timeout_seconds = max(5.0, timeout_seconds)
+        self.max_retries = max(0, max_retries)
+        self.retry_base_seconds = max(0.1, retry_base_seconds)
+        self.last_provider_name = "groq"
+        self.last_model = self.model
+
+    async def analyze_code(
+        self, code: str, language: str = "python", context: str | None = None
+    ) -> dict[str, Any]:
+        system_prompt, user_prompt = _build_prompts(code=code, language=language, context=context)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        content = await self.complete_messages(messages=messages, structured_json=True)
+        return _parse_json_content(content, "Groq")
+
+    async def generate_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        content = await self.complete_messages(messages=messages, structured_json=True)
+        return _parse_json_content(content, "Groq")
+
+    async def complete_messages(
+        self,
+        messages: list[dict[str, str]],
+        structured_json: bool = False,
+    ) -> str:
+        if not messages:
+            raise RuntimeError("Groq request requires at least one message.")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {"model": self.model, "messages": messages}
+        if structured_json:
+            payload["response_format"] = {"type": "json_object"}
+
+        errors: list[str] = []
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    response = await client.post(
+                        f"{self.api_base}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+            except httpx.TimeoutException as exc:
+                errors.append(f"timeout: {exc}")
+                if attempt >= self.max_retries:
+                    break
+                await asyncio.sleep(self.retry_base_seconds * (2**attempt))
+                continue
+            except httpx.HTTPError as exc:
+                errors.append(f"network: {exc}")
+                if attempt >= self.max_retries:
+                    break
+                await asyncio.sleep(self.retry_base_seconds * (2**attempt))
+                continue
+
+            if response.status_code == 429:
+                detail = _extract_error_message(response)
+                retry_after = _retry_after_seconds(response.headers)
+                errors.append(f"429: {detail}")
+                if attempt >= self.max_retries:
+                    break
+                sleep_for = retry_after if retry_after is not None else self.retry_base_seconds * (2**attempt)
+                await asyncio.sleep(max(0.1, sleep_for))
+                continue
+
+            if response.status_code >= 400:
+                detail = _extract_error_message(response)
+                raise RuntimeError(f"Groq API error {response.status_code}: {detail}")
+
+            body = response.json()
+            choices = body.get("choices") or []
+            if not choices:
+                raise RuntimeError("Groq response did not include choices.")
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+            if isinstance(content, list):
+                chunks = [str(part.get("text", "")) for part in content if isinstance(part, dict)]
+                content = "\n".join(chunk for chunk in chunks if chunk).strip()
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError("Groq response did not include textual content.")
+            return content.strip()
+
+        detail = " | ".join(errors[:5]) if errors else "unknown error"
+        raise RuntimeError(f"Groq request failed after retries. Details: {detail}")
+
+
 @dataclass
 class ModelRateState:
     limit_requests: int | None = None
@@ -749,17 +856,29 @@ def _validate_openrouter_api_key(api_key: str | None) -> str:
     return key
 
 
-def _model_for_openrouter(requested_model: str) -> str:
+def _validate_groq_api_key(api_key: str | None) -> str:
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("LLM_PROVIDER=groq requires GROQ_API_KEY.")
+    return key
+
+
+def _resolve_model(requested_model: str, default_model: str) -> str:
     model = (requested_model or "").strip()
     if not model:
-        return "auto"
+        return default_model
     return model
 
 
 def build_provider(
     provider_name: str,
+    groq_api_key: str | None,
     openrouter_api_key: str | None,
     model: str,
+    groq_api_base: str = "https://api.groq.com/openai/v1",
+    groq_timeout_seconds: float = 30.0,
+    groq_max_retries: int = 2,
+    groq_retry_base_seconds: float = 1.0,
     api_base: str = "https://openrouter.ai/api/v1",
     free_only: bool = True,
     app_name: str | None = None,
@@ -770,13 +889,24 @@ def build_provider(
     max_candidates: int = 3,
 ) -> LLMProvider:
     provider = (provider_name or "").strip().lower()
-    resolved_model = _model_for_openrouter(model)
+    groq_model = _resolve_model(model, default_model="llama-3.3-70b-versatile")
+    openrouter_model = _resolve_model(model, default_model="openrouter/auto")
     if provider in {"", "auto"}:
+        groq_key = (groq_api_key or "").strip()
+        if groq_key:
+            return GroqProvider(
+                api_key=groq_key,
+                model=groq_model,
+                api_base=groq_api_base,
+                timeout_seconds=groq_timeout_seconds,
+                max_retries=groq_max_retries,
+                retry_base_seconds=groq_retry_base_seconds,
+            )
         key = (openrouter_api_key or "").strip()
         if key:
             return OpenRouterProvider(
                 api_key=key,
-                model=resolved_model,
+                model=openrouter_model,
                 api_base=api_base,
                 free_only=free_only,
                 app_name=app_name,
@@ -786,13 +916,22 @@ def build_provider(
                 total_timeout_seconds=total_timeout_seconds,
                 max_candidates=max_candidates,
             )
-        return MockProvider(model=resolved_model)
+        return MockProvider(model=groq_model)
     if provider == "mock":
-        return MockProvider(model=resolved_model)
+        return MockProvider(model=groq_model)
+    if provider == "groq":
+        return GroqProvider(
+            api_key=_validate_groq_api_key(groq_api_key),
+            model=groq_model,
+            api_base=groq_api_base,
+            timeout_seconds=groq_timeout_seconds,
+            max_retries=groq_max_retries,
+            retry_base_seconds=groq_retry_base_seconds,
+        )
     if provider == "openrouter":
         return OpenRouterProvider(
             api_key=_validate_openrouter_api_key(openrouter_api_key),
-            model=resolved_model,
+            model=openrouter_model,
             api_base=api_base,
             free_only=free_only,
             app_name=app_name,
@@ -802,15 +941,20 @@ def build_provider(
             total_timeout_seconds=total_timeout_seconds,
             max_candidates=max_candidates,
         )
-    raise ValueError("LLM_PROVIDER must be 'auto', 'openrouter', or 'mock'.")
+    raise ValueError("LLM_PROVIDER must be 'auto', 'groq', 'openrouter', or 'mock'.")
 
 
 @lru_cache(maxsize=1)
 def get_llm_provider() -> LLMProvider:
     return build_provider(
         provider_name=settings.LLM_PROVIDER,
+        groq_api_key=settings.GROQ_API_KEY,
         openrouter_api_key=settings.OPENROUTER_API_KEY,
         model=settings.LLM_MODEL,
+        groq_api_base=settings.GROQ_API_BASE,
+        groq_timeout_seconds=settings.GROQ_TIMEOUT_SECONDS,
+        groq_max_retries=settings.GROQ_MAX_RETRIES,
+        groq_retry_base_seconds=settings.GROQ_RETRY_BASE_SECONDS,
         api_base=settings.OPENROUTER_API_BASE,
         free_only=settings.OPENROUTER_FREE_ONLY,
         app_name=settings.OPENROUTER_APP_NAME,
@@ -824,24 +968,30 @@ def get_llm_provider() -> LLMProvider:
 
 def get_provider_diagnostics() -> dict[str, Any]:
     configured = settings.LLM_PROVIDER.strip().lower()
-    key_present = bool((settings.OPENROUTER_API_KEY or "").strip())
-    if configured == "openrouter":
+    groq_key_present = bool((settings.GROQ_API_KEY or "").strip())
+    openrouter_key_present = bool((settings.OPENROUTER_API_KEY or "").strip())
+    if configured == "groq":
+        provider = "groq"
+    elif configured == "openrouter":
         provider = "openrouter"
-    elif configured in {"", "auto"} and key_present:
+    elif configured in {"", "auto"} and groq_key_present:
+        provider = "groq"
+    elif configured in {"", "auto"} and openrouter_key_present:
         provider = "openrouter"
     else:
         provider = "mock"
     effective = settings.effective_llm_provider
-    if effective not in {"openrouter", "mock"}:
+    if effective not in {"groq", "openrouter", "mock"}:
         effective = "mock"
     model_mode = (settings.LLM_MODEL or "").strip() or "auto"
-    parsed = urlparse(settings.OPENROUTER_API_BASE)
-    api_base_host = parsed.hostname or "openrouter.ai"
+    api_base = settings.GROQ_API_BASE if provider == "groq" else settings.OPENROUTER_API_BASE
+    parsed = urlparse(api_base)
+    api_base_host = parsed.hostname or ("api.groq.com" if provider == "groq" else "openrouter.ai")
     return {
         "provider": provider,
         "effective_provider": effective,
         "model_mode": model_mode,
-        "free_only": bool(settings.OPENROUTER_FREE_ONLY),
+        "free_only": bool(settings.OPENROUTER_FREE_ONLY) if provider == "openrouter" else False,
         "api_base_host": api_base_host,
         "mock_fallback_allowed": bool(settings.LLM_ALLOW_MOCK_FALLBACK),
     }

@@ -167,7 +167,9 @@ export function ReviewPanel({
             onViewFix={(issue) => setSelectedIssueFix(issue)}
           />
 
-          {selectedIssueFix?.original_code && selectedIssueFix.fixed_code && (
+          {selectedIssueFix?.original_code &&
+            selectedIssueFix.fixed_code !== undefined &&
+            selectedIssueFix.fixed_code !== null && (
             <div className="overflow-hidden rounded-2xl border border-app-border">
               <div className="border-b border-app-border bg-app-panelSoft px-3 py-2 text-xs text-app-muted">
                 {"Issue Fix Diff (original -> suggested)"}

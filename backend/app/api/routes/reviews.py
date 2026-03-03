@@ -58,6 +58,7 @@ async def run_review(
         technical_debt=result["technical_debt"],
         overall_assessment=result["overall_assessment"],
         refactor_suggestions=result["refactor_suggestions"],
+        performance=result.get("performance", {}),
     )
 
 

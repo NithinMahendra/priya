@@ -25,8 +25,13 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
 
-    LLM_PROVIDER: str = "openrouter"
-    LLM_MODEL: str = "nvidia/nemotron-3-nano-30b-a3b:free"
+    LLM_PROVIDER: str = "groq"
+    LLM_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_API_KEY: str | None = None
+    GROQ_API_BASE: str = "https://api.groq.com/openai/v1"
+    GROQ_TIMEOUT_SECONDS: float = 30.0
+    GROQ_MAX_RETRIES: int = 2
+    GROQ_RETRY_BASE_SECONDS: float = 1.0
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_API_BASE: str = "https://openrouter.ai/api/v1"
     OPENROUTER_SITE_URL: str | None = None
@@ -56,9 +61,13 @@ class Settings(BaseSettings):
     def effective_llm_provider(self) -> str:
         provider = self.LLM_PROVIDER.strip().lower()
         if provider in {"", "auto"}:
+            if (self.GROQ_API_KEY or "").strip():
+                return "groq"
             if (self.OPENROUTER_API_KEY or "").strip():
                 return "openrouter"
             return "mock"
+        if provider == "groq":
+            return "groq" if (self.GROQ_API_KEY or "").strip() else "mock"
         if provider == "openrouter":
             return "openrouter" if (self.OPENROUTER_API_KEY or "").strip() else "mock"
         if provider == "mock":

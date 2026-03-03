@@ -73,6 +73,7 @@ class ReviewService:
         combined_issues = self._merge_issues(
             static_issues + security_issues + dependency_issues + ai_result["issues"]
         )
+        combined_issues = self._enrich_issue_fix_snippets(combined_issues, code=code)
         summary = self._build_summary(combined_issues)
         local_refactors = self._generate_local_refactors(code, combined_issues)
         ai_refactors = ai_result.get("refactor_suggestions", [])
@@ -333,6 +334,8 @@ class ReviewService:
 
     def _complexity_rank(self, complexity: str) -> int:
         value = complexity.lower().replace(" ", "")
+        if value in {"", "unknown", "n/a", "na"}:
+            return -1
         if "n!" in value:
             return 8
         if "2^n" in value:
@@ -352,6 +355,42 @@ class ReviewService:
         if "o(1)" in value:
             return 0
         return 1
+
+    def _enrich_issue_fix_snippets(
+        self,
+        issues: list[dict[str, Any]],
+        code: str,
+    ) -> list[dict[str, Any]]:
+        lines = code.splitlines()
+        for issue in issues:
+            line_no = issue.get("line")
+            original = issue.get("original_code")
+            fixed = issue.get("fixed_code")
+
+            if not original and isinstance(line_no, int) and 1 <= line_no <= len(lines):
+                original = lines[line_no - 1].strip()
+                issue["original_code"] = original
+
+            if fixed:
+                continue
+
+            message = str(issue.get("message", "")).lower()
+            suggested_fix = str(issue.get("suggested_fix", "")).strip()
+
+            if "sql injection" in message:
+                issue["fixed_code"] = 'cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))'
+            elif "eval(" in message or "code execution" in message:
+                issue["fixed_code"] = "value = safe_parse(user_input)"
+            elif "hardcoded" in message and "secret" in message:
+                issue["fixed_code"] = "secret_value = os.getenv('SECRET_VALUE', '')"
+            elif "debug logging" in message:
+                issue["fixed_code"] = ""
+            elif suggested_fix and original:
+                issue["fixed_code"] = suggested_fix
+            elif suggested_fix:
+                issue["fixed_code"] = suggested_fix
+
+        return issues
 
     def _is_quota_exhaustion_error(self, detail: str) -> bool:
         lowered = detail.lower()
