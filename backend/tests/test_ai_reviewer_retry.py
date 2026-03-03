@@ -37,3 +37,21 @@ async def test_ai_reviewer_retries_before_fallback() -> None:
     result = await reviewer.review(code="print(1)")
     assert result["provider"] == "flaky"
     assert provider.calls >= 2
+
+
+class MalformedProvider(LLMProvider):
+    async def analyze_code(self, code: str, language: str = "python", context: str | None = None):
+        return {
+            "issues": ["bad-item", {"line": 1, "severity": "High", "message": "x"}],
+            "refactor_suggestions": ["not-an-object", {"before": "a=1", "after": "a = 1"}],
+        }
+
+
+@pytest.mark.asyncio
+async def test_ai_reviewer_ignores_malformed_provider_items() -> None:
+    reviewer = AIReviewer(provider=MalformedProvider())
+    result = await reviewer.review(code="a=1")
+    assert result["provider"] == "malformed"
+    assert isinstance(result["issues"], list)
+    assert isinstance(result["refactor_suggestions"], list)
+    assert result["refactor_suggestions"] == [{"before": "a=1", "after": "a = 1", "reason": "Improve readability and safety."}]

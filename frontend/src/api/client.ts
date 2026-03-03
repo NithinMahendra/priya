@@ -26,15 +26,22 @@ async function request<T>(
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: body
-      ? body instanceof URLSearchParams
-        ? body.toString()
-        : JSON.stringify(body)
-      : undefined
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body
+        ? body instanceof URLSearchParams
+          ? body.toString()
+          : JSON.stringify(body)
+        : undefined
+    });
+  } catch (error) {
+    const suffix = path.startsWith("/") ? path : `/${path}`;
+    const endpoint = `${API_BASE}${suffix}`;
+    throw new Error(`Network error: cannot reach backend at ${endpoint}.`);
+  }
 
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { detail?: string };

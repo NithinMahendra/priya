@@ -69,9 +69,16 @@ class AIReviewer:
         )
 
     def _normalize(self, payload: dict[str, Any], line_count: int) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            payload = {}
+
         raw_issues = payload.get("issues", [])
+        if not isinstance(raw_issues, list):
+            raw_issues = []
         issues: list[dict[str, Any]] = []
         for issue in raw_issues:
+            if not isinstance(issue, dict):
+                continue
             line = self._normalize_line(issue.get("line"), line_count=line_count)
             if issue.get("line") is not None and line is None:
                 continue
@@ -93,7 +100,12 @@ class AIReviewer:
         summary = self._build_summary(issues)
 
         refactor_suggestions = []
-        for item in payload.get("refactor_suggestions", []):
+        raw_refactors = payload.get("refactor_suggestions", [])
+        if not isinstance(raw_refactors, list):
+            raw_refactors = []
+        for item in raw_refactors:
+            if not isinstance(item, dict):
+                continue
             before = str(item.get("before", "")).strip()
             after = str(item.get("after", "")).strip()
             reason = str(item.get("reason", "Improve readability and safety.")).strip()
