@@ -34,6 +34,7 @@ class FlakyProvider(LLMProvider):
 async def test_ai_reviewer_retries_before_fallback() -> None:
     provider = FlakyProvider()
     reviewer = AIReviewer(provider=provider)
+    reviewer.max_retries = 1
     result = await reviewer.review(code="print(1)")
     assert result["provider"] == "flaky"
     assert provider.calls >= 2

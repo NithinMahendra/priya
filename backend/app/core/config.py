@@ -25,18 +25,21 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
 
-    LLM_PROVIDER: str = "auto"
-    LLM_MODEL: str = "auto"
+    LLM_PROVIDER: str = "openrouter"
+    LLM_MODEL: str = "nvidia/nemotron-3-nano-30b-a3b:free"
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_API_BASE: str = "https://openrouter.ai/api/v1"
     OPENROUTER_SITE_URL: str | None = None
     OPENROUTER_APP_NAME: str = "AI Code Reviewer"
     OPENROUTER_FREE_ONLY: bool = True
     OPENROUTER_MODEL_CACHE_SECONDS: int = 300
-    OPENROUTER_TIMEOUT_SECONDS: float = 45.0
+    OPENROUTER_TIMEOUT_SECONDS: float = 30.0
+    OPENROUTER_TOTAL_TIMEOUT_SECONDS: float = 32.0
+    OPENROUTER_MAX_CANDIDATES: int = 1
     LLM_ALLOW_MOCK_FALLBACK: bool = False
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_SECONDS: float = 0.75
+    LLM_TOTAL_TIMEOUT_SECONDS: float = 35.0
     PROJECT_CONTEXT_MAX_CHARS: int = 4000
 
     RATE_LIMIT_REQUESTS: int = 120

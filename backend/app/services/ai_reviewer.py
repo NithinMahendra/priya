@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Any
 
 from app.core.config import settings
@@ -14,10 +15,12 @@ class AIReviewer:
         self.allow_mock_fallback = settings.LLM_ALLOW_MOCK_FALLBACK
         self.max_retries = max(0, settings.LLM_MAX_RETRIES)
         self.base_backoff = max(0.1, settings.LLM_RETRY_BASE_SECONDS)
+        self.total_timeout = max(5.0, settings.LLM_TOTAL_TIMEOUT_SECONDS)
 
     async def review(
         self, code: str, language: str = "python", context: str | None = None
     ) -> dict[str, Any]:
+        started_at = time.monotonic()
         provider_name = self._provider_name()
         line_count = max(1, len(code.splitlines()))
         prompt_constraints = self._build_prompt_constraints(language=language, line_count=line_count)
@@ -25,17 +28,37 @@ class AIReviewer:
 
         raw: dict[str, Any] | None = None
         last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
+        max_attempts = self._max_attempts()
+        for attempt in range(max_attempts):
+            elapsed = time.monotonic() - started_at
+            remaining = self.total_timeout - elapsed
+            if remaining <= 0:
+                last_error = TimeoutError("LLM review timed out before provider completed.")
+                raw = None
+                break
             try:
-                raw = await self.provider.analyze_code(code=code, language=language, context=merged_context)
+                raw = await asyncio.wait_for(
+                    self.provider.analyze_code(code=code, language=language, context=merged_context),
+                    timeout=remaining,
+                )
                 provider_name = self._provider_name()
+                break
+            except asyncio.TimeoutError:
+                last_error = TimeoutError("LLM review timed out.")
+                raw = None
                 break
             except Exception as exc:
                 last_error = exc
-                if attempt >= self.max_retries:
+                if attempt >= max_attempts - 1:
                     raw = None
                     break
-                await asyncio.sleep(self.base_backoff * (2**attempt))
+                sleep_for = self.base_backoff * (2**attempt)
+                post_error_elapsed = time.monotonic() - started_at
+                remaining_after_error = self.total_timeout - post_error_elapsed
+                if remaining_after_error <= 0:
+                    raw = None
+                    break
+                await asyncio.sleep(min(sleep_for, remaining_after_error))
 
         if raw is None:
             if isinstance(self.provider, MockProvider) or self.allow_mock_fallback:
@@ -52,6 +75,12 @@ class AIReviewer:
         normalized = self._normalize(raw, line_count=line_count)
         normalized["provider"] = provider_name
         return normalized
+
+    def _max_attempts(self) -> int:
+        provider_cls = self.provider.__class__.__name__.lower()
+        if "openrouter" in provider_cls:
+            return 1
+        return self.max_retries + 1
 
     def _provider_name(self) -> str:
         dynamic_name = getattr(self.provider, "last_provider_name", None)

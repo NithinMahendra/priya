@@ -4,6 +4,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlparse
 
@@ -99,6 +100,7 @@ class ModelRateState:
     remaining_requests: int | None = None
     reset_at: float | None = None
     blocked_until: float | None = None
+    unavailable_until: float | None = None
 
 
 class OpenRouterProvider(LLMProvider):
@@ -111,7 +113,9 @@ class OpenRouterProvider(LLMProvider):
         app_name: str | None = None,
         site_url: str | None = None,
         model_cache_seconds: int = 300,
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = 15.0,
+        total_timeout_seconds: float = 20.0,
+        max_candidates: int = 3,
     ) -> None:
         self.api_key = api_key
         self.model = model.strip() or "auto"
@@ -120,7 +124,9 @@ class OpenRouterProvider(LLMProvider):
         self.app_name = app_name
         self.site_url = site_url
         self.model_cache_seconds = max(30, model_cache_seconds)
-        self.timeout_seconds = max(10.0, timeout_seconds)
+        self.timeout_seconds = max(5.0, timeout_seconds)
+        self.total_timeout_seconds = max(8.0, total_timeout_seconds)
+        self.max_candidates = max(1, min(8, max_candidates))
         self.last_provider_name = "openrouter"
         self.last_model = self.model
         self._models_cache: list[dict[str, Any]] = []
@@ -132,6 +138,7 @@ class OpenRouterProvider(LLMProvider):
     async def analyze_code(
         self, code: str, language: str = "python", context: str | None = None
     ) -> dict[str, Any]:
+        started_at = time.monotonic()
         system_prompt, user_prompt = _build_prompts(code=code, language=language, context=context)
         needed_tokens = _estimate_tokens(system_prompt) + _estimate_tokens(user_prompt)
         candidates = await self._pick_candidate_models(needed_tokens=needed_tokens)
@@ -148,20 +155,28 @@ class OpenRouterProvider(LLMProvider):
         errors: list[str] = []
         for index, model_id in enumerate(candidates):
             fallback_attempted = index > 0
+            elapsed = time.monotonic() - started_at
+            remaining_budget = self.total_timeout_seconds - elapsed
+            if remaining_budget <= 0:
+                errors.append("total timeout budget exceeded")
+                break
+            attempt_timeout = max(5.0, min(self.timeout_seconds, remaining_budget))
             try:
                 raw_content = await self._run_completion(
                     model_id=model_id,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     fallback_attempted=fallback_attempted,
+                    timeout_seconds=attempt_timeout,
                 )
                 self.last_model = model_id
                 self.last_provider_name = "openrouter"
                 logger.info(
-                    "openrouter_review_success model=%s candidate_index=%s fallback_attempted=%s",
+                    "openrouter_review_success model=%s candidate_index=%s fallback_attempted=%s elapsed_seconds=%.2f",
                     model_id,
                     index,
                     fallback_attempted,
+                    time.monotonic() - started_at,
                 )
                 return _parse_json_content(raw_content, "OpenRouter")
             except _RateLimitedError as exc:
@@ -171,6 +186,19 @@ class OpenRouterProvider(LLMProvider):
                     model_id,
                     index,
                     exc.retry_after_seconds,
+                )
+                errors.append(f"{model_id}: {exc}")
+            except _ModelHttpError as exc:
+                if exc.status_code in {400, 404, 422}:
+                    self._mark_model_unavailable(model_id=model_id, cooldown_seconds=900)
+                elif 500 <= exc.status_code <= 599:
+                    self._mark_model_unavailable(model_id=model_id, cooldown_seconds=120)
+                logger.warning(
+                    "openrouter_model_http_error model=%s candidate_index=%s status=%s error=%s",
+                    model_id,
+                    index,
+                    exc.status_code,
+                    exc,
                 )
                 errors.append(f"{model_id}: {exc}")
             except Exception as exc:
@@ -191,16 +219,15 @@ class OpenRouterProvider(LLMProvider):
     async def _pick_candidate_models(self, needed_tokens: int) -> list[str]:
         if self.model.lower() not in {"", "auto"}:
             if self.free_only:
-                try:
-                    catalog = await self._get_models()
-                except Exception:
-                    lowered = self.model.lower()
-                    if not (lowered.endswith(":free") or lowered == "openrouter/free"):
+                lowered = self.model.lower()
+                if not (lowered.endswith(":free") or lowered == "openrouter/free"):
+                    try:
+                        catalog = await self._get_models()
+                    except Exception:
                         raise RuntimeError(
                             f"Cannot verify pricing for '{self.model}'. "
                             "Use a :free model or LLM_MODEL=auto when OPENROUTER_FREE_ONLY=true."
                         )
-                else:
                     matched = next((item for item in catalog if str(item.get("id", "")) == self.model), None)
                     if matched and not _is_free_model(matched):
                         raise RuntimeError(
@@ -221,6 +248,8 @@ class OpenRouterProvider(LLMProvider):
                 continue
             if self.free_only and not _is_free_model(item):
                 continue
+            if not _is_text_model(item):
+                continue
 
             context_length = _as_int(item.get("context_length")) or 0
             if context_length > 0 and needed_tokens + 512 > context_length:
@@ -234,7 +263,7 @@ class OpenRouterProvider(LLMProvider):
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
         if scored:
-            return [model_id for _, model_id in scored[:8]]
+            return [model_id for _, model_id in scored[: self.max_candidates]]
 
         return ["openrouter/free"] if self.free_only else ["openrouter/auto"]
 
@@ -256,6 +285,8 @@ class OpenRouterProvider(LLMProvider):
             score += 10.0
         if "openrouter/free" in lowered:
             score -= 5.0
+        if model_id == self.last_model:
+            score += 40.0
 
         limits = item.get("per_request_limits")
         if isinstance(limits, dict):
@@ -289,6 +320,7 @@ class OpenRouterProvider(LLMProvider):
         system_prompt: str,
         user_prompt: str,
         fallback_attempted: bool,
+        timeout_seconds: float,
     ) -> str:
         self._record_request_now()
         headers = {
@@ -310,7 +342,7 @@ class OpenRouterProvider(LLMProvider):
             ],
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(
                 f"{self.api_base}/chat/completions",
                 headers=headers,
@@ -343,7 +375,7 @@ class OpenRouterProvider(LLMProvider):
                 rate_snapshot,
                 detail,
             )
-            raise RuntimeError(f"OpenRouter error {response.status_code}: {detail}")
+            raise _ModelHttpError(status_code=response.status_code, message=detail)
 
         body = response.json()
         choices = body.get("choices") or []
@@ -460,11 +492,29 @@ class OpenRouterProvider(LLMProvider):
             state.reset_at = state.blocked_until
         self._rate_state_by_model[model_id] = state
 
+    def _mark_model_unavailable(self, model_id: str, cooldown_seconds: float) -> None:
+        now = time.time()
+        state = self._rate_state_by_model.get(model_id, ModelRateState())
+        state.unavailable_until = now + max(30.0, cooldown_seconds)
+        self._rate_state_by_model[model_id] = state
+        logger.info(
+            "openrouter_model_unavailable model=%s cooldown_seconds=%s until=%s",
+            model_id,
+            cooldown_seconds,
+            state.unavailable_until,
+        )
+
 
 class _RateLimitedError(Exception):
     def __init__(self, message: str, retry_after_seconds: float | None) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+class _ModelHttpError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"OpenRouter error {status_code}: {message}")
 
 
 def _build_prompts(code: str, language: str, context: str | None) -> tuple[str, str]:
@@ -527,10 +577,28 @@ def _is_free_model(item: dict[str, Any]) -> bool:
     return prompt_price <= 0 and completion_price <= 0
 
 
+def _is_text_model(item: dict[str, Any]) -> bool:
+    architecture = item.get("architecture")
+    if isinstance(architecture, dict):
+        modality = str(architecture.get("modality", "")).lower()
+        if modality:
+            return "text->text" in modality
+        inputs = architecture.get("input_modalities")
+        outputs = architecture.get("output_modalities")
+        if isinstance(inputs, list) and isinstance(outputs, list):
+            return "text" in [str(v).lower() for v in inputs] and "text" in [
+                str(v).lower() for v in outputs
+            ]
+    model_id = str(item.get("id", "")).lower()
+    return "vl" not in model_id
+
+
 def _model_blocked(state: ModelRateState | None, now: float) -> bool:
     if not state:
         return False
     if state.blocked_until and state.blocked_until > now:
+        return True
+    if state.unavailable_until and state.unavailable_until > now:
         return True
     return False
 
@@ -545,7 +613,27 @@ def _extract_error_message(response: httpx.Response) -> str:
         err = payload.get("error")
         if isinstance(err, dict):
             message = err.get("message")
+            code = err.get("code")
+            metadata = err.get("metadata")
+            provider_name: str | None = None
+            provider_code: str | None = None
+            if isinstance(metadata, dict):
+                provider_name_value = metadata.get("provider_name")
+                if provider_name_value:
+                    provider_name = str(provider_name_value)
+                provider_code_value = metadata.get("provider_code") or metadata.get("upstream_code")
+                if provider_code_value is not None:
+                    provider_code = str(provider_code_value)
             if message:
+                details: list[str] = []
+                if code is not None:
+                    details.append(f"code={code}")
+                if provider_name:
+                    details.append(f"provider={provider_name}")
+                if provider_code:
+                    details.append(f"provider_code={provider_code}")
+                if details:
+                    return f"{message} ({', '.join(details)})"
                 return str(message)
         if isinstance(err, str):
             return err
@@ -631,7 +719,9 @@ def build_provider(
     app_name: str | None = None,
     site_url: str | None = None,
     model_cache_seconds: int = 300,
-    timeout_seconds: float = 45.0,
+    timeout_seconds: float = 15.0,
+    total_timeout_seconds: float = 20.0,
+    max_candidates: int = 3,
 ) -> LLMProvider:
     provider = (provider_name or "").strip().lower()
     resolved_model = _model_for_openrouter(model)
@@ -647,6 +737,8 @@ def build_provider(
                 site_url=site_url,
                 model_cache_seconds=model_cache_seconds,
                 timeout_seconds=timeout_seconds,
+                total_timeout_seconds=total_timeout_seconds,
+                max_candidates=max_candidates,
             )
         return MockProvider(model=resolved_model)
     if provider == "mock":
@@ -661,10 +753,13 @@ def build_provider(
             site_url=site_url,
             model_cache_seconds=model_cache_seconds,
             timeout_seconds=timeout_seconds,
+            total_timeout_seconds=total_timeout_seconds,
+            max_candidates=max_candidates,
         )
     raise ValueError("LLM_PROVIDER must be 'auto', 'openrouter', or 'mock'.")
 
 
+@lru_cache(maxsize=1)
 def get_llm_provider() -> LLMProvider:
     return build_provider(
         provider_name=settings.LLM_PROVIDER,
@@ -676,6 +771,8 @@ def get_llm_provider() -> LLMProvider:
         site_url=settings.OPENROUTER_SITE_URL,
         model_cache_seconds=settings.OPENROUTER_MODEL_CACHE_SECONDS,
         timeout_seconds=settings.OPENROUTER_TIMEOUT_SECONDS,
+        total_timeout_seconds=settings.OPENROUTER_TOTAL_TIMEOUT_SECONDS,
+        max_candidates=settings.OPENROUTER_MAX_CANDIDATES,
     )
 
 
