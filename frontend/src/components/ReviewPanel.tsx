@@ -60,6 +60,16 @@ export function ReviewPanel({
     setSelectedIssueFix(null);
   }, [result?.submission_id]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedIssueFix(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const selectedFix = useMemo(
     () => (result?.refactor_suggestions ?? [])[selectedFixIndex] ?? null,
     [result, selectedFixIndex]
@@ -164,32 +174,11 @@ export function ReviewPanel({
             decisions={issueDecisions}
             onAcceptIssue={onAcceptIssue}
             onIgnoreIssue={onIgnoreIssue}
-            onViewFix={(issue) => setSelectedIssueFix(issue)}
+            onViewFix={(issue) => {
+              setActiveTab("issues");
+              setSelectedIssueFix(issue);
+            }}
           />
-
-          {selectedIssueFix?.original_code &&
-            selectedIssueFix.fixed_code !== undefined &&
-            selectedIssueFix.fixed_code !== null && (
-            <div className="overflow-hidden rounded-2xl border border-app-border">
-              <div className="border-b border-app-border bg-app-panelSoft px-3 py-2 text-xs text-app-muted">
-                {"Issue Fix Diff (original -> suggested)"}
-              </div>
-              <DiffEditor
-                height="220px"
-                language="plaintext"
-                original={selectedIssueFix.original_code}
-                modified={selectedIssueFix.fixed_code}
-                theme={theme === "dark" ? "vs-dark" : "light"}
-                options={{
-                  readOnly: true,
-                  renderSideBySide: true,
-                  minimap: { enabled: false },
-                  fontSize: 13,
-                  scrollBeyondLastLine: false
-                }}
-              />
-            </div>
-          )}
 
           {result.refactor_suggestions.length > 0 && (
             <section className="space-y-3">
@@ -308,6 +297,52 @@ export function ReviewPanel({
       >
         Download JSON Report
       </button>
+
+      {selectedIssueFix?.original_code &&
+        selectedIssueFix.fixed_code !== undefined &&
+        selectedIssueFix.fixed_code !== null && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/65 p-4">
+          <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-app-border bg-app-panel shadow-panel">
+            <div className="flex items-center justify-between border-b border-app-border bg-app-panelSoft px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-app-text">
+                  Issue Fix Diff
+                </p>
+                <p className="text-xs text-app-muted">
+                  {selectedIssueFix.type}
+                  {selectedIssueFix.line ? ` - Line ${selectedIssueFix.line}` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedIssueFix(null)}
+                className="rounded-lg border border-app-border px-3 py-1 text-xs text-app-muted transition hover:border-app-accent hover:text-app-text"
+              >
+                Close
+              </button>
+            </div>
+            <DiffEditor
+              height="360px"
+              language="plaintext"
+              original={selectedIssueFix.original_code}
+              modified={
+                selectedIssueFix.fixed_code.trim().length > 0
+                  ? selectedIssueFix.fixed_code
+                  : "/* remove this code */"
+              }
+              theme={theme === "dark" ? "vs-dark" : "light"}
+              options={{
+                readOnly: true,
+                renderSideBySide: true,
+                minimap: { enabled: false },
+                fontSize: 13,
+                scrollBeyondLastLine: false,
+                wordWrap: "on"
+              }}
+            />
+          </div>
+        </div>
+      )}
     </section>
   );
 }
